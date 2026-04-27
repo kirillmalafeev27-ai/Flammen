@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import * as Photons from '../lib/photons.module.js';
 import { GLTFLoader } from './GltfLoader.js';
+import { MeshoptDecoder } from '../lib/meshopt_decoder.module.js';
 import { buildFlamethrower } from './flamethrower.js';
 
 const params = new URLSearchParams(location.search);
@@ -68,6 +69,7 @@ export class Game {
 
     async loadAssets() {
         const loader = new GLTFLoader();
+        loader.setMeshoptDecoder(MeshoptDecoder);
         const [temple, moai] = await Promise.all([
             loader.loadAsync('assets/temple.glb'),
             loader.loadAsync('assets/moai.glb')
