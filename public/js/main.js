@@ -9,37 +9,35 @@ let controls;
 let scene;
 let renderer;
 let manager;
-let clock;
 
-const FLAME_POSITION = new THREE.Vector3(0, 1.2, 0);
-const FLAME_SCALE = 0.28;
+const SCALE = 0.18;
+const RELEASE_MULTIPLIER = 70;
+const ANIM_SPEED = 2.5;
+let renderSlot = 1;
 
-function initThreeJS() {
+function init() {
     const w = window.innerWidth;
     const h = window.innerHeight;
 
     camera = new THREE.PerspectiveCamera(60, w / h, 0.1, 200);
-    camera.position.set(2.6, 2.0, 3.2);
+    camera.position.set(0, 2.2, 6.5);
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x05030a);
-    scene.fog = new THREE.Fog(0x05030a, 8, 28);
+    scene.fog = new THREE.Fog(0x05030a, 14, 40);
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(w, h);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     rootElement.appendChild(renderer.domElement);
 
     controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.12;
-    controls.maxPolarAngle = (0.95 * Math.PI) / 2;
-    controls.minDistance = 1.5;
-    controls.maxDistance = 12;
-    controls.target.set(0, 1.3, 0);
+    controls.target.set(0, 1.0, -2.5);
+    controls.minDistance = 2;
+    controls.maxDistance = 20;
 
     window.addEventListener('resize', onResize, false);
 }
@@ -53,143 +51,112 @@ function onResize() {
 }
 
 function buildEnvironment() {
-    const ambient = new THREE.AmbientLight(0x402030, 0.35);
-    scene.add(ambient);
+    scene.add(new THREE.AmbientLight(0x202838, 0.4));
 
-    const moon = new THREE.DirectionalLight(0x6a7ab5, 0.25);
-    moon.position.set(-6, 8, -4);
-    scene.add(moon);
+    const key = new THREE.DirectionalLight(0xffffff, 1.2);
+    key.position.set(4, 6, 5);
+    scene.add(key);
 
-    const groundGeo = new THREE.CircleGeometry(24, 64);
+    const fill = new THREE.DirectionalLight(0x6688ff, 0.3);
+    fill.position.set(-5, 3, -2);
+    scene.add(fill);
+
     const groundMat = new THREE.MeshStandardMaterial({
-        color: 0x1a1410,
-        roughness: 0.95,
-        metalness: 0.0
+        color: 0x141014,
+        roughness: 0.95
     });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
+    const ground = new THREE.Mesh(new THREE.CircleGeometry(40, 64), groundMat);
     ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
+    ground.position.y = 0;
     scene.add(ground);
-
-    const pedestalGroup = new THREE.Group();
-    scene.add(pedestalGroup);
-
-    const baseMat = new THREE.MeshStandardMaterial({
-        color: 0x2b2520,
-        roughness: 0.85,
-        metalness: 0.1
-    });
-
-    const pedestalBase = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.6, 0.75, 0.15, 24),
-        baseMat
-    );
-    pedestalBase.position.y = 0.075;
-    pedestalBase.castShadow = true;
-    pedestalBase.receiveShadow = true;
-    pedestalGroup.add(pedestalBase);
-
-    const pedestalColumn = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.32, 0.42, 0.95, 18),
-        baseMat
-    );
-    pedestalColumn.position.y = 0.15 + 0.95 / 2;
-    pedestalColumn.castShadow = true;
-    pedestalColumn.receiveShadow = true;
-    pedestalGroup.add(pedestalColumn);
-
-    const bowlMat = new THREE.MeshStandardMaterial({
-        color: 0x3a2a1a,
-        roughness: 0.7,
-        metalness: 0.25,
-        emissive: 0x331100,
-        emissiveIntensity: 0.4
-    });
-    const bowl = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.45, 0.32, 0.18, 24),
-        bowlMat
-    );
-    bowl.position.y = 0.15 + 0.95 + 0.09;
-    bowl.castShadow = true;
-    bowl.receiveShadow = true;
-    pedestalGroup.add(bowl);
-
-    const coalMat = new THREE.MeshStandardMaterial({
-        color: 0x110806,
-        roughness: 0.95,
-        emissive: 0xff3300,
-        emissiveIntensity: 1.2
-    });
-    const coals = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.35, 0.28, 0.05, 24),
-        coalMat
-    );
-    coals.position.y = 0.15 + 0.95 + 0.18 + 0.025;
-    pedestalGroup.add(coals);
 }
 
-function setupParticleSystems() {
-    manager = new Photons.Manager();
-
-    manager.addParticleSystem(setupEmbers(FLAME_SCALE, FLAME_POSITION));
-    manager.addParticleSystem(setupBaseFlame(FLAME_SCALE, FLAME_POSITION));
-    manager.addParticleSystem(setupBrightFlame(FLAME_SCALE, FLAME_POSITION));
-
-    const lightParent = new THREE.Object3D();
-    scene.add(lightParent);
-    lightParent.position.copy(FLAME_POSITION);
-    lightParent.position.y += 0.15;
-
-    const flickerShadows = {
-        mapSize: 1024,
-        cameraNear: 0.5,
-        cameraFar: 50,
-        bias: 0.000009,
-        edgeRadius: 3
-    };
-    manager.addComponent(
-        new Photons.FlickerLight(
-            lightParent,
-            8,
-            2.2,
-            new THREE.Color().setRGB(1, 0.75, 0.35),
-            0,
-            1.0,
-            flickerShadows
-        )
-    );
-}
-
-function setupEmbers(scale, position) {
+function createFlameThrowerBody() {
     const root = new THREE.Object3D();
-    root.position.copy(position);
+
+    const bodyMat = new THREE.MeshStandardMaterial({
+        color: 0x9a9aa0,
+        roughness: 0.35,
+        metalness: 0.85
+    });
+
+    const barrel = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12, 0.12, 0.9, 24, 4),
+        bodyMat
+    );
+    const t = new THREE.Matrix4();
+    t.makeRotationX(Math.PI / 2);
+    barrel.geometry.applyMatrix4(t);
+    t.makeTranslation(0, 0, 0.45);
+    barrel.geometry.applyMatrix4(t);
+    root.add(barrel);
+
+    const nozzle = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.18, 0.14, 0.18, 24),
+        new THREE.MeshStandardMaterial({
+            color: 0x2a1a14,
+            roughness: 0.6,
+            metalness: 0.7,
+            emissive: 0xff4400,
+            emissiveIntensity: 0.6
+        })
+    );
+    nozzle.geometry.applyMatrix4(new THREE.Matrix4().makeRotationX(Math.PI / 2));
+    nozzle.position.set(0, 0, 0.05);
+    root.add(nozzle);
+
+    const handle = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05, 0.05, 0.35, 16),
+        bodyMat
+    );
+    handle.position.set(0, -0.2, 0.7);
+    root.add(handle);
+
+    const particleSystemRoot = new THREE.Object3D();
+    root.add(particleSystemRoot);
+
+    return { root, particleSystemRoot };
+}
+
+function setupParticleSystems(particleSystemRoot) {
+    manager = new Photons.Manager();
+    manager.addParticleSystem(setupEmbers(particleSystemRoot));
+    manager.addParticleSystem(setupBaseFlame(particleSystemRoot));
+    manager.addParticleSystem(setupBrightFlame(particleSystemRoot));
+}
+
+function setupEmbers(parent) {
+    const root = new THREE.Object3D();
+    parent.add(root);
 
     const path = 'assets/textures/ember.png';
     const tex = new THREE.TextureLoader().load(path);
     const atlas = new Photons.Atlas(tex, path);
     atlas.addFrameSet(1, 0.0, 0.0, 1.0, 1.0);
-    const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.AdditiveBlending);
+    const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.AdditiveBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, renderer);
-    ps.init(180);
-    ps.setEmitter(new Photons.ConstantParticleEmitter(8));
+    ps.init(150 * RELEASE_MULTIPLIER);
+    ps.setEmitter(new Photons.ConstantParticleEmitter(6 * RELEASE_MULTIPLIER));
 
     const sizeGen = new Photons.RandomGenerator(
         THREE.Vector2,
         new THREE.Vector2(0.0, 0.0),
-        new THREE.Vector2(scale * 0.15, scale * 0.15),
+        new THREE.Vector2(SCALE * 0.15, SCALE * 0.15),
         0.0, 0.0, false
     );
-    ps.addParticleStateInitializer(new Photons.LifetimeInitializer(3.0, 1.0, 0.0, 0.0, false));
+    ps.addParticleStateInitializer(new Photons.LifetimeInitializer(3.0 * ANIM_SPEED, 1.0 * ANIM_SPEED, 0.0, 0.0, false));
     ps.addParticleStateInitializer(new Photons.SizeInitializer(sizeGen));
     ps.addParticleStateInitializer(new Photons.BoxPositionInitializer(
-        new THREE.Vector3(0.05 * scale, 0.0, 0.05 * scale),
-        new THREE.Vector3(-0.025 * scale, 0.0, -0.025 * scale)
+        new THREE.Vector3(0.05 * SCALE, 0.0, 0.05 * SCALE),
+        new THREE.Vector3(-0.025 * SCALE, 0.0, -0.025 * SCALE)
     ));
+
+    const vFactor = ANIM_SPEED * SCALE;
     ps.addParticleStateInitializer(new Photons.RandomVelocityInitializer(
-        new THREE.Vector3(0.4 * scale, 0.5 * scale, 0.4 * scale),
-        new THREE.Vector3(-0.2 * scale, 0.8 * scale, -0.2 * scale),
-        0.6 * scale, 0.8 * scale, false
+        new THREE.Vector3(0, 0.5, 0),
+        new THREE.Vector3(0, -0.25, -1),
+        2 * vFactor, 2 * vFactor
     ));
 
     const opacityOp = ps.addParticleStateOperator(new Photons.OpacityInterpolatorOperator());
@@ -209,8 +176,8 @@ function setupEmbers(scale, position) {
 
     const accelGen = new Photons.SphereRandomGenerator(
         Math.PI * 2.0, 0.0, Math.PI,
-        -Math.PI / 2, 20.0, -8,
-        scale, scale, scale,
+        -Math.PI / 2, 5.0, -2,
+        SCALE, SCALE, SCALE,
         0.0, 0.0, 0.0
     );
     ps.addParticleStateOperator(new Photons.AccelerationOperator(accelGen));
@@ -220,54 +187,58 @@ function setupEmbers(scale, position) {
     return ps;
 }
 
-function setupBaseFlame(scale, position) {
+function setupBaseFlame(parent) {
     const root = new THREE.Object3D();
-    root.position.copy(position);
+    parent.add(root);
 
     const path = 'assets/textures/base_flame.png';
     const tex = new THREE.TextureLoader().load(path);
     const atlas = new Photons.Atlas(tex, path);
     atlas.addFrameSet(18, 0.0, 0.0, 128.0 / 1024.0, 128.0 / 512.0);
-    const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true);
+    const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.NormalBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, renderer);
-    ps.init(50);
-    ps.setEmitter(new Photons.ConstantParticleEmitter(10));
+    ps.init(50 * RELEASE_MULTIPLIER);
+    ps.setEmitter(new Photons.ConstantParticleEmitter(10 * RELEASE_MULTIPLIER));
 
     ps.addParticleSequence(0, 18);
     const sequences = ps.getParticleSequences();
 
     ps.addParticleStateInitializer(new Photons.LifetimeInitializer(0.0, 0.0, 0.0, 0.0, false));
     ps.addParticleStateInitializer(new Photons.RotationInitializer(
-        new Photons.RandomGenerator(0, Math.PI / 2.0, -Math.PI / 2.0, 0.0, 0.0, false)
+        new Photons.RandomGenerator(0, 2.0 * Math.PI, -Math.PI, 0.0, 0.0, false)
     ));
     ps.addParticleStateInitializer(new Photons.RotationalSpeedInitializer(1.0, -1.0, 0.0, 0.0, false));
+
     ps.addParticleStateInitializer(new Photons.SizeInitializer(
         new Photons.RandomGenerator(
             THREE.Vector2,
-            new THREE.Vector2(0.25 * scale, 0.25 * scale),
-            new THREE.Vector2(0.5 * scale, 0.5 * scale),
-            0.0, 0.0, false
+            new THREE.Vector2(0.15, 0.15),
+            new THREE.Vector2(0.0, 0.0),
+            1.15 * SCALE, 0.60 * SCALE, false
         )
     ));
-    ps.addParticleStateInitializer(new Photons.BoxPositionInitializer(
-        new THREE.Vector3(0.05 * scale, 0.0, 0.05 * scale),
-        new THREE.Vector3(-0.025 * scale, 0.0, -0.025 * scale)
-    ));
-    ps.addParticleStateInitializer(new Photons.RandomVelocityInitializer(
-        new THREE.Vector3(0.05 * scale, 0.4 * scale, 0.05 * scale),
-        new THREE.Vector3(-0.025 * scale, 0.8 * scale, -0.025 * scale),
-        0.35 * scale, 0.5 * scale, false
-    ));
-    ps.addParticleStateInitializer(new Photons.SequenceInitializer(sequences));
 
-    ps.addParticleStateOperator(new Photons.SequenceOperator(sequences, 0.07, false));
+    ps.addParticleStateInitializer(new Photons.BoxPositionInitializer(
+        new THREE.Vector3(0.05 * SCALE, 0.0, 0.05 * SCALE),
+        new THREE.Vector3(-0.025 * SCALE, 0.0, -0.025 * SCALE)
+    ));
+
+    const vFactor = ANIM_SPEED * SCALE;
+    ps.addParticleStateInitializer(new Photons.RandomVelocityInitializer(
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -1),
+        2 * vFactor, 2 * vFactor
+    ));
+
+    ps.addParticleStateInitializer(new Photons.SequenceInitializer(sequences));
+    ps.addParticleStateOperator(new Photons.SequenceOperator(sequences, 0.08 * ANIM_SPEED, false));
 
     const opacityOp = ps.addParticleStateOperator(new Photons.OpacityInterpolatorOperator());
     opacityOp.addElements([
         [0.0, 0.0],
-        [0.3, 0.25],
-        [0.3, 0.5],
+        [0.5, 0.4],
+        [0.2, 0.75],
         [0.0, 1.0]
     ]);
 
@@ -285,68 +256,61 @@ function setupBaseFlame(scale, position) {
         [[1.0, 1.0, 1.0], 1.0]
     ]);
 
-    ps.addParticleStateOperator(new Photons.AccelerationOperator(
-        new Photons.RandomGenerator(
-            THREE.Vector3,
-            new THREE.Vector3(0.0, 0.0, 0.0),
-            new THREE.Vector3(0.0, 1.5 * scale, 0.0),
-            0.0, 0.0, false
-        )
-    ));
-
     ps.setSimulateInWorldSpace(true);
     ps.start();
     return ps;
 }
 
-function setupBrightFlame(scale, position) {
+function setupBrightFlame(parent) {
     const root = new THREE.Object3D();
-    root.position.copy(position);
+    parent.add(root);
 
     const path = 'assets/textures/bright_flame.png';
     const tex = new THREE.TextureLoader().load(path);
     const atlas = new Photons.Atlas(tex, path);
     atlas.addFrameSet(16, 0.0, 0.0, 212.0 / 1024.0, 256.0 / 1024.0);
-    const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true);
+    const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.NormalBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, renderer);
-    ps.init(20);
-    ps.setEmitter(new Photons.ConstantParticleEmitter(5));
+    ps.init(20 * RELEASE_MULTIPLIER);
+    ps.setEmitter(new Photons.ConstantParticleEmitter(5 * RELEASE_MULTIPLIER));
 
     ps.addParticleSequence(0, 16);
     const sequences = ps.getParticleSequences();
 
     ps.addParticleStateInitializer(new Photons.LifetimeInitializer(0.0, 0.0, 0.0, 0.0, false));
     ps.addParticleStateInitializer(new Photons.RotationInitializer(
-        new Photons.RandomGenerator(0, Math.PI, -Math.PI / 2.0, 0.0, 0.0, false)
+        new Photons.RandomGenerator(0, 2.0 * Math.PI, -Math.PI, 0.0, 0.0, false)
     ));
     ps.addParticleStateInitializer(new Photons.RotationalSpeedInitializer(Math.PI / 2.0, -Math.PI / 4.0, 0.0, 0.0, false));
     ps.addParticleStateInitializer(new Photons.SizeInitializer(
         new Photons.RandomGenerator(
             THREE.Vector2,
+            new THREE.Vector2(0.05, 0.05),
             new THREE.Vector2(0.0, 0.0),
-            new THREE.Vector2(0.0, 0.0),
-            0.2 * scale, 0.65 * scale, false
+            0.95 * SCALE, 0.50 * SCALE, false
         )
     ));
     ps.addParticleStateInitializer(new Photons.BoxPositionInitializer(
-        new THREE.Vector3(0.1 * scale, 0.0, 0.1 * scale),
-        new THREE.Vector3(-0.05 * scale, 0.0, -0.05 * scale)
+        new THREE.Vector3(0.1 * SCALE, 0.0, 0.1 * SCALE),
+        new THREE.Vector3(-0.05 * SCALE, 0.0, -0.05 * SCALE)
     ));
-    ps.addParticleStateInitializer(new Photons.RandomVelocityInitializer(
-        new THREE.Vector3(0.02 * scale, 0.4 * scale, 0.02 * scale),
-        new THREE.Vector3(-0.01 * scale, 0.4 * scale, -0.01 * scale),
-        0.1 * scale, 0.2 * scale, false
-    ));
-    ps.addParticleStateInitializer(new Photons.SequenceInitializer(sequences));
 
-    ps.addParticleStateOperator(new Photons.SequenceOperator(sequences, 0.1, false));
+    const vFactor = ANIM_SPEED * SCALE;
+    ps.addParticleStateInitializer(new Photons.RandomVelocityInitializer(
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -1),
+        2 * vFactor, 2 * vFactor
+    ));
+
+    ps.addParticleStateInitializer(new Photons.SequenceInitializer(sequences));
+    ps.addParticleStateOperator(new Photons.SequenceOperator(sequences, 0.1 * ANIM_SPEED, false));
 
     const opacityOp = ps.addParticleStateOperator(new Photons.OpacityInterpolatorOperator());
     opacityOp.addElements([
         [0.0, 0.0],
-        [0.6, 0.2],
-        [0.5, 0.75],
+        [0.4, 0.2],
+        [0.35, 0.75],
         [0.0, 1.0]
     ]);
 
@@ -368,33 +332,51 @@ function setupBrightFlame(scale, position) {
         [[0.75, 0.0, 0.0], 1.0]
     ]);
 
-    ps.addParticleStateOperator(new Photons.AccelerationOperator(
-        new Photons.RandomGenerator(
-            THREE.Vector3,
-            new THREE.Vector3(0.0, 0.0, 0.0),
-            new THREE.Vector3(0.0, 1.5 * scale, 0.0),
-            0.0, 0.0, false
-        )
-    ));
-
     ps.setSimulateInWorldSpace(true);
     ps.start();
     return ps;
 }
 
+function addJetLights(jetParent) {
+    const lights = [];
+    for (let i = 0; i < 3; i++) {
+        const l = new THREE.PointLight(0xff7733, 4.0, 8.0, 2.0);
+        l.position.set(0, 0, -1.0 - i * 1.2);
+        jetParent.add(l);
+        lights.push(l);
+    }
+    return lights;
+}
+
+let jetLights;
+
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
     manager.update();
+
+    if (jetLights) {
+        const t = performance.now() * 0.01;
+        for (let i = 0; i < jetLights.length; i++) {
+            jetLights[i].intensity = 3.0 + Math.sin(t + i * 1.7) * 1.5 + Math.random() * 0.6;
+        }
+    }
+
     renderer.render(scene, camera);
     manager.render(renderer, camera);
 }
 
 function start() {
-    initThreeJS();
+    init();
     buildEnvironment();
-    setupParticleSystems();
-    clock = new THREE.Clock();
+
+    const { root, particleSystemRoot } = createFlameThrowerBody();
+    root.position.set(0, 1.4, 1.5);
+    scene.add(root);
+
+    setupParticleSystems(particleSystemRoot);
+    jetLights = addJetLights(particleSystemRoot);
+
     animate();
 }
 
