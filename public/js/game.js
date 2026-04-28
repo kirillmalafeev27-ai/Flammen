@@ -55,7 +55,6 @@ export class Game {
         this.moveAnim = null;
 
         this.keys = {};
-        this.bindInput();
     }
 
     async build() {
@@ -64,6 +63,7 @@ export class Game {
         this.spawnPlayer();
         this.placeStatuesAndDoors();
         this.randomizeCorrectDoors();
+        this.bindInput();
         this.ui.showIntro();
     }
 
