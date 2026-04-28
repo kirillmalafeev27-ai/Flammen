@@ -1,21 +1,36 @@
 import * as THREE from 'three';
 import * as Photons from '../lib/photons.module.js';
 import { GLTFLoader } from './GltfLoader.js';
+import { MeshoptDecoder } from '../lib/meshopt_decoder.module.js';
 import { buildFlamethrower } from './flamethrower.js';
 
 const params = new URLSearchParams(location.search);
+const readInt = (name, fallback, min) => {
+    const value = parseInt(params.get(name) || `${fallback}`, 10);
+    return Math.max(min, Number.isFinite(value) ? value : fallback);
+};
+const readFloat = (name, fallback) => {
+    const value = parseFloat(params.get(name) || `${fallback}`);
+    return Number.isFinite(value) ? value : fallback;
+};
+const readOptionalFloat = (name) => {
+    const value = parseFloat(params.get(name) || 'NaN');
+    return Number.isFinite(value) ? value : NaN;
+};
+const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
 const cfg = {
-    bridges: parseInt(params.get('bridges') || '8'),
-    tiles: parseInt(params.get('tiles') || '6'),
-    rInner: parseFloat(params.get('rInner') || 'NaN'),
-    rOuter: parseFloat(params.get('rOuter') || 'NaN'),
-    bridgePhase: parseFloat(params.get('phase') || '0'),
-    bridgeY: parseFloat(params.get('y') || 'NaN'),
-    moaiHeight: parseFloat(params.get('moaiH') || '1.6'),
-    fireScale: parseFloat(params.get('fireScale') || '0.18'),
-    releaseMul: parseFloat(params.get('release') || '20'),
-    sideOffset: parseFloat(params.get('side') || '1.0'),
-    fireMouthY: parseFloat(params.get('mouthY') || '1.1'),
+    bridges: readInt('bridges', 8, 3),
+    tiles: readInt('tiles', 6, 4),
+    rInner: readOptionalFloat('rInner'),
+    rOuter: readOptionalFloat('rOuter'),
+    bridgePhase: readFloat('phase', 0),
+    bridgeY: readOptionalFloat('y'),
+    moaiHeight: readFloat('moaiH', 1.45),
+    fireScale: readOptionalFloat('fireScale'),
+    releaseMul: readFloat('release', 18),
+    sideOffset: readOptionalFloat('side'),
+    fireMouthY: readOptionalFloat('mouthY'),
     debug: params.has('debug')
 };
 
@@ -23,6 +38,8 @@ const TURN_DURATION = 0.18;
 const FIRE_PERIOD = 3.0;
 const FIRE_WARNING = 0.5;
 const FIRE_DURATION = 1.0;
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+const CAMERA_TARGET_HEIGHT = 0.85;
 
 const STATE = {
     INTRO: 'intro',
@@ -48,6 +65,18 @@ export class Game {
         this.doors = [];
         this.correctDoors = new Set();
 
+        this.tileSpacing = 1;
+        this.statueSideOffset = 1.1;
+        this.statueRadialOffset = 0.25;
+        this.statueBaseHeight = 0.22;
+        this.statueBaseRadius = 0.44;
+        this.fireMouthY = 1.05;
+        this.fireForwardOffset = 0.32;
+        this.doorSetback = 0.6;
+        this.cameraDistance = 5.8;
+        this.cameraHeight = 4.6;
+        this.cameraShoulder = 0.8;
+
         this.player = null;
         this.playerBridge = 0;
         this.playerTile = 0;
@@ -68,6 +97,7 @@ export class Game {
 
     async loadAssets() {
         const loader = new GLTFLoader();
+        loader.setMeshoptDecoder(MeshoptDecoder);
         const [temple, moai] = await Promise.all([
             loader.loadAsync('assets/temple.glb'),
             loader.loadAsync('assets/moai.glb')
@@ -90,6 +120,21 @@ export class Game {
         const moaiHeight = moaiBox.max.y - moaiBox.min.y;
         this.moaiTemplateScale = cfg.moaiHeight / Math.max(0.001, moaiHeight);
         this.moaiTemplateMinY = moaiBox.min.y;
+        this.statueBaseHeight = clamp(cfg.moaiHeight * 0.15, 0.18, 0.28);
+        this.statueBaseRadius = clamp(cfg.moaiHeight * 0.28, 0.36, 0.52);
+        this.fireMouthY = Number.isFinite(cfg.fireMouthY) ? cfg.fireMouthY : this.statueBaseHeight + cfg.moaiHeight * 0.60;
+        this.fireForwardOffset = clamp(cfg.moaiHeight * 0.22, 0.28, 0.42);
+
+        this.statueStoneMat = new THREE.MeshStandardMaterial({
+            color: 0x5b5147,
+            roughness: 0.92,
+            metalness: 0.02
+        });
+        this.doorStoneMat = new THREE.MeshStandardMaterial({
+            color: 0x4b433b,
+            roughness: 0.9,
+            metalness: 0.02
+        });
     }
 
     layoutWorld() {
@@ -105,6 +150,16 @@ export class Game {
         if (!isFinite(cfg.bridgeY)) cfg.bridgeY = box.min.y + size.y * 0.52;
 
         this.center = new THREE.Vector3(center.x, cfg.bridgeY, center.z);
+        this.tileSpacing = (cfg.rOuter - cfg.rInner) / Math.max(1, cfg.tiles - 1);
+        this.statueSideOffset = Number.isFinite(cfg.sideOffset) ? cfg.sideOffset : clamp(this.tileSpacing * 0.55, 0.95, 1.45);
+        this.statueRadialOffset = clamp(this.tileSpacing * 0.16, 0.18, 0.42);
+        this.doorSetback = clamp(this.tileSpacing * 0.34, 0.45, 0.9);
+        this.cameraDistance = clamp(this.tileSpacing * 2.15, 4.8, 8.0);
+        this.cameraHeight = clamp(this.tileSpacing * 1.65, 3.8, 6.2);
+        this.cameraShoulder = clamp(this.tileSpacing * 0.36, 0.55, 1.2);
+        if (!Number.isFinite(cfg.fireScale)) {
+            cfg.fireScale = clamp(this.statueSideOffset * 0.16, 0.18, 0.28);
+        }
 
         for (let i = 0; i < cfg.bridges; i++) {
             const angle = cfg.bridgePhase + (i / cfg.bridges) * Math.PI * 2;
@@ -146,39 +201,46 @@ export class Game {
     spawnPlayer() {
         const group = new THREE.Group();
         const body = new THREE.Mesh(
-            new THREE.CapsuleGeometry(0.25, 0.7, 6, 12),
-            new THREE.MeshStandardMaterial({ color: 0xc8d4ff, roughness: 0.4, metalness: 0.05, emissive: 0x223366, emissiveIntensity: 0.4 })
+            new THREE.CapsuleGeometry(0.23, 0.68, 6, 12),
+            new THREE.MeshStandardMaterial({
+                color: 0x7a5434,
+                roughness: 0.78,
+                metalness: 0.03,
+                emissive: 0x2c1307,
+                emissiveIntensity: 0.3
+            })
         );
         body.position.y = 0.6;
         body.castShadow = false;
         group.add(body);
 
-        const halo = new THREE.Mesh(
-            new THREE.RingGeometry(0.35, 0.5, 24),
-            new THREE.MeshBasicMaterial({ color: 0x88ddff, side: THREE.DoubleSide, transparent: true, opacity: 0.7 })
+        const marker = new THREE.Mesh(
+            new THREE.RingGeometry(0.34, 0.45, 16),
+            new THREE.MeshBasicMaterial({ color: 0xff9a3d, side: THREE.DoubleSide, transparent: true, opacity: 0.45 })
         );
-        halo.rotation.x = -Math.PI / 2;
-        halo.position.y = 0.02;
-        group.add(halo);
-        this.playerHalo = halo;
+        marker.rotation.x = -Math.PI / 2;
+        marker.position.y = 0.02;
+        group.add(marker);
+        this.playerMarker = marker;
 
-        const torch = new THREE.PointLight(0x88aaff, 1.4, 6, 2.0);
+        const torch = new THREE.PointLight(0xff8a3d, 1.25, 5.5, 2.0);
         torch.position.y = 1.2;
         group.add(torch);
 
         this.scene.add(group);
         this.player = group;
         this.player.position.copy(this.bridges[0].tiles[0]);
+        this.snapCameraToPlayer();
     }
 
     placeStatuesAndDoors() {
         for (const b of this.bridges) {
-            const outerStatue = this.makeStatue(b.tiles[1], b, +1);
-            const innerStatue = this.makeStatue(b.tiles[b.tiles.length - 2], b, -1);
+            const outerStatue = this.makeStatue(1, b, +1, +1);
+            const innerStatue = this.makeStatue(b.tiles.length - 2, b, -1, -1);
             outerStatue.fireTile = 1;
             innerStatue.fireTile = b.tiles.length - 2;
-            outerStatue.firePhase = Math.random() * FIRE_PERIOD;
-            innerStatue.firePhase = (Math.random() * FIRE_PERIOD + FIRE_PERIOD * 0.5) % FIRE_PERIOD;
+            outerStatue.firePhase = (b.index / cfg.bridges) * FIRE_PERIOD;
+            innerStatue.firePhase = (outerStatue.firePhase + FIRE_PERIOD * 0.5) % FIRE_PERIOD;
             outerStatue.bridgeIndex = b.index;
             innerStatue.bridgeIndex = b.index;
             this.statues.push(outerStatue, innerStatue);
@@ -190,23 +252,17 @@ export class Game {
             this.doors.push(door);
             b.door = door;
         }
-
-        for (let i = 0; i < cfg.bridges; i++) {
-            const angle = cfg.bridgePhase + ((i + 0.5) / cfg.bridges) * Math.PI * 2;
-            const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
-            const pos = this.center.clone().add(dir.clone().multiplyScalar(cfg.rOuter * 0.98));
-            const decor = this.makeStatueMesh(pos, dir.clone().multiplyScalar(-1));
-            this.scene.add(decor);
-        }
     }
 
-    makeStatue(tilePos, bridge, side) {
+    makeStatue(tileIndex, bridge, side, radialSide) {
         const group = new THREE.Group();
         this.scene.add(group);
 
-        const lateral = new THREE.Vector3().crossVectors(bridge.dir, new THREE.Vector3(0, 1, 0)).normalize();
-        const sideVec = lateral.clone().multiplyScalar(side * cfg.sideOffset);
-        const statuePos = tilePos.clone().add(sideVec);
+        const tilePos = bridge.tiles[tileIndex];
+        const lateral = new THREE.Vector3().crossVectors(bridge.dir, WORLD_UP).normalize();
+        const sideVec = lateral.clone().multiplyScalar(side * this.statueSideOffset);
+        const radialVec = bridge.dir.clone().multiplyScalar(radialSide * this.statueRadialOffset);
+        const statuePos = tilePos.clone().add(sideVec).add(radialVec);
 
         const facingDir = sideVec.clone().multiplyScalar(-1).normalize();
         const moai = this.makeStatueMesh(statuePos, facingDir);
@@ -214,8 +270,8 @@ export class Game {
 
         const fireOrigin = new THREE.Object3D();
         fireOrigin.position.copy(statuePos);
-        fireOrigin.position.y += cfg.fireMouthY;
-        fireOrigin.position.add(facingDir.clone().multiplyScalar(0.3));
+        fireOrigin.position.y += this.fireMouthY;
+        fireOrigin.position.add(facingDir.clone().multiplyScalar(this.fireForwardOffset));
         this.scene.add(fireOrigin);
         const flame = buildFlamethrower(fireOrigin, this.renderer, {
             scale: cfg.fireScale,
@@ -241,17 +297,35 @@ export class Game {
     makeStatueMesh(position, facingDir) {
         const inner = this.moaiTemplate.clone(true);
         inner.scale.setScalar(this.moaiTemplateScale);
-        inner.position.y = -this.moaiTemplateMinY * this.moaiTemplateScale;
+        inner.position.y = this.statueBaseHeight - this.moaiTemplateMinY * this.moaiTemplateScale - 0.02;
 
         const wrap = new THREE.Group();
+        const base = new THREE.Mesh(
+            new THREE.CylinderGeometry(this.statueBaseRadius, this.statueBaseRadius * 1.12, this.statueBaseHeight, 8),
+            this.statueStoneMat
+        );
+        base.position.y = this.statueBaseHeight * 0.5;
+        wrap.add(base);
         wrap.add(inner);
         wrap.position.copy(position);
         wrap.lookAt(position.clone().add(facingDir));
 
+        const stoneTint = new THREE.Color(0x5d554c);
         wrap.traverse(o => {
             if (o.isMesh) {
                 o.castShadow = false;
                 o.receiveShadow = false;
+                if (o !== base && o.material) {
+                    const materials = Array.isArray(o.material) ? o.material : [o.material];
+                    const styled = materials.map(material => {
+                        const clone = material.clone();
+                        if (clone.color) clone.color.lerp(stoneTint, 0.48);
+                        if ('roughness' in clone) clone.roughness = Math.max(clone.roughness ?? 0, 0.82);
+                        if ('metalness' in clone) clone.metalness = Math.min(clone.metalness ?? 0, 0.04);
+                        return clone;
+                    });
+                    o.material = Array.isArray(o.material) ? styled : styled[0];
+                }
             }
         });
         return wrap;
@@ -259,29 +333,41 @@ export class Game {
 
     makeDoor(position, bridge) {
         const group = new THREE.Group();
-        const frameMat = new THREE.MeshStandardMaterial({ color: 0x2a1f15, roughness: 0.8, metalness: 0.2 });
+        const frameMat = this.doorStoneMat;
         const slabMat = new THREE.MeshStandardMaterial({
-            color: 0x1a0d08, roughness: 0.7, metalness: 0.3,
-            emissive: 0x110200, emissiveIntensity: 0.3
+            color: 0x17110d, roughness: 0.86, metalness: 0.05,
+            emissive: 0x120603, emissiveIntensity: 0.18
         });
-        const frame = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.4, 0.3), frameMat);
-        frame.position.set(0, 1.2, 0);
-        const slab = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.0, 0.15), slabMat);
-        slab.position.set(0, 1.0, 0.1);
-        group.add(frame, slab);
+        const emberMat = new THREE.MeshStandardMaterial({
+            color: 0xff8a33,
+            emissive: 0xff3a12,
+            emissiveIntensity: 0.45,
+            roughness: 0.55,
+            transparent: true,
+            opacity: 0.78
+        });
 
-        const ringGeo = new THREE.TorusGeometry(0.6, 0.04, 8, 32);
-        const ringMat = new THREE.MeshStandardMaterial({ color: 0xffaa44, emissive: 0x441100, emissiveIntensity: 0.5 });
-        const ring = new THREE.Mesh(ringGeo, ringMat);
-        ring.position.set(0, 1.0, 0.2);
-        group.add(ring);
+        const leftPillar = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.65, 0.38), frameMat);
+        leftPillar.position.set(-0.68, 0.85, 0);
+        const rightPillar = leftPillar.clone();
+        rightPillar.position.x = 0.68;
+        const lintel = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.32, 0.42), frameMat);
+        lintel.position.set(0, 1.76, 0);
+        const threshold = new THREE.Mesh(new THREE.BoxGeometry(1.48, 0.16, 0.56), frameMat);
+        threshold.position.set(0, 0.08, 0.06);
+        const slab = new THREE.Mesh(new THREE.BoxGeometry(0.98, 1.34, 0.12), slabMat);
+        slab.position.set(0, 0.82, 0.1);
+        const emberSlit = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.86, 0.03), emberMat);
+        emberSlit.position.set(0, 0.86, 0.18);
+        group.add(leftPillar, rightPillar, lintel, threshold, slab, emberSlit);
 
-        group.position.copy(position);
         const inward = new THREE.Vector3().subVectors(this.center, position).setY(0).normalize();
-        group.lookAt(position.clone().add(inward));
+        const doorPosition = position.clone().add(inward.clone().multiplyScalar(this.doorSetback));
+        group.position.copy(doorPosition);
+        group.lookAt(doorPosition.clone().add(inward));
         this.scene.add(group);
 
-        return { group, slab, ring, position: position.clone(), bridgeIndex: bridge.index, ringMat };
+        return { group, slab, emberSlit, position: position.clone(), bridgeIndex: bridge.index, emberMat };
     }
 
     randomizeCorrectDoors() {
@@ -325,6 +411,7 @@ export class Game {
         this.playerBridge = 0;
         this.playerTile = 0;
         this.player.position.copy(this.bridges[0].tiles[0]);
+        this.snapCameraToPlayer();
         this.ui.hideIntro();
         this.ui.update(this);
     }
@@ -384,12 +471,12 @@ export class Game {
         this.updateCamera(dt);
         this.manager.update();
 
-        if (this.playerHalo) {
-            this.playerHalo.material.opacity = 0.5 + Math.sin(this.elapsed * 4) * 0.2;
-            this.playerHalo.rotation.z += dt * 1.5;
+        if (this.playerMarker) {
+            this.playerMarker.material.opacity = 0.38 + Math.sin(this.elapsed * 4) * 0.12;
+            this.playerMarker.rotation.z += dt * 1.5;
         }
         for (const door of this.doors) {
-            door.ringMat.emissiveIntensity = 0.5 + Math.sin(this.elapsed * 2 + door.bridgeIndex) * 0.2;
+            door.emberMat.emissiveIntensity = 0.32 + Math.sin(this.elapsed * 1.7 + door.bridgeIndex) * 0.12;
         }
     }
 
@@ -402,6 +489,7 @@ export class Game {
             if (!inActiveRange) {
                 if (s.flame.isFiring()) s.flame.setFiring(false);
                 s.eyeLight.intensity = 0;
+                s.isFireActive = false;
                 continue;
             }
 
@@ -439,13 +527,28 @@ export class Game {
     }
 
     updateCamera(dt) {
+        const { position, target } = this.getCameraPose();
+        this.camera.position.lerp(position, 1 - Math.exp(-dt * 5));
+        this.camera.lookAt(target);
+    }
+
+    snapCameraToPlayer() {
+        const { position, target } = this.getCameraPose();
+        this.camera.position.copy(position);
+        this.camera.lookAt(target);
+    }
+
+    getCameraPose() {
         const target = this.player.position.clone();
         const radial = new THREE.Vector3().subVectors(target, this.center).setY(0);
         const radialN = radial.lengthSq() > 1e-4 ? radial.clone().normalize() : new THREE.Vector3(1, 0, 0);
-        const camOffset = radialN.clone().multiplyScalar(5).add(new THREE.Vector3(0, 4.5, 0));
-        const desiredPos = target.clone().add(camOffset);
-        this.camera.position.lerp(desiredPos, 1 - Math.exp(-dt * 5));
-        this.camera.lookAt(target.x, target.y + 0.8, target.z);
+        const tangent = new THREE.Vector3(-radialN.z, 0, radialN.x).multiplyScalar(this.cameraShoulder);
+        const position = target.clone()
+            .add(radialN.multiplyScalar(this.cameraDistance))
+            .add(tangent)
+            .add(WORLD_UP.clone().multiplyScalar(this.cameraHeight));
+        target.y += CAMERA_TARGET_HEIGHT;
+        return { position, target };
     }
 
     render() {
