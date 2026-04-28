@@ -5,41 +5,32 @@ import { MeshoptDecoder } from '../lib/meshopt_decoder.module.js';
 import { buildFlamethrower } from './flamethrower.js';
 
 const params = new URLSearchParams(location.search);
-const readInt = (name, fallback, min) => {
-    const value = parseInt(params.get(name) || `${fallback}`, 10);
-    return Math.max(min, Number.isFinite(value) ? value : fallback);
-};
-const readFloat = (name, fallback) => {
-    const value = parseFloat(params.get(name) || `${fallback}`);
-    return Number.isFinite(value) ? value : fallback;
-};
-const readOptionalFloat = (name) => {
-    const value = parseFloat(params.get(name) || 'NaN');
-    return Number.isFinite(value) ? value : NaN;
-};
-const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
-
 const cfg = {
-    bridges: readInt('bridges', 8, 3),
-    tiles: readInt('tiles', 6, 4),
-    rInner: readOptionalFloat('rInner'),
-    rOuter: readOptionalFloat('rOuter'),
-    bridgePhase: readFloat('phase', 0),
-    bridgeY: readOptionalFloat('y'),
-    moaiHeight: readFloat('moaiH', 1.45),
-    fireScale: readOptionalFloat('fireScale'),
-    releaseMul: readFloat('release', 18),
-    sideOffset: readOptionalFloat('side'),
-    fireMouthY: readOptionalFloat('mouthY'),
+    bridges: parseInt(params.get('bridges') || '8'),
+    tiles: parseInt(params.get('tiles') || '6'),
+    rInner: parseFloat(params.get('rInner') || 'NaN'),
+    rOuter: parseFloat(params.get('rOuter') || 'NaN'),
+    bridgePhase: parseFloat(params.get('phase') || '0'),
+    bridgeY: parseFloat(params.get('y') || 'NaN'),
+    moaiHeight: parseFloat(params.get('moaiH') || '1.6'),
+    fireScale: parseFloat(params.get('fireScale') || '0.18'),
+    releaseMul: parseFloat(params.get('release') || '20'),
+    sideOffset: parseFloat(params.get('side') || '1.0'),
+    fireMouthY: parseFloat(params.get('mouthY') || '1.1'),
     debug: params.has('debug')
 };
 
 const TURN_DURATION = 0.18;
-const FIRE_PERIOD = 3.0;
-const FIRE_WARNING = 0.5;
-const FIRE_DURATION = 1.0;
+const FIRE_PERIOD = 4.8;
+const FIRE_WARNING = 0.65;
+const FIRE_DURATION = 1.55;
+const CAMERA_EYE_HEIGHT = 1.35;
+const LOOK_SENSITIVITY = 0.0022;
+const MAX_CAMERA_PITCH = Math.PI * 0.42;
+const MOVE_DOT_THRESHOLD = 0.35;
+const START_GRACE = 0.8;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
-const CAMERA_TARGET_HEIGHT = 0.85;
+const MOAI_FACE_YAW = Math.PI;
 
 const STATE = {
     INTRO: 'intro',
@@ -65,25 +56,23 @@ export class Game {
         this.doors = [];
         this.correctDoors = new Set();
 
-        this.tileSpacing = 1;
-        this.statueSideOffset = 1.1;
-        this.statueRadialOffset = 0.25;
-        this.statueBaseHeight = 0.22;
-        this.statueBaseRadius = 0.44;
-        this.fireMouthY = 1.05;
-        this.fireForwardOffset = 0.32;
-        this.doorSetback = 0.6;
-        this.cameraDistance = 5.8;
-        this.cameraHeight = 4.6;
-        this.cameraShoulder = 0.8;
-
         this.player = null;
         this.playerBridge = 0;
         this.playerTile = 0;
         this.moveAnim = null;
 
         this.keys = {};
-        this.bindInput();
+        this.cameraYaw = 0;
+        this.cameraPitch = 0;
+        this.lookDragging = false;
+        this.startGraceUntil = 0;
+
+        this._cameraPos = new THREE.Vector3();
+        this._cameraTarget = new THREE.Vector3();
+        this._cameraForward = new THREE.Vector3();
+        this._cameraRight = new THREE.Vector3();
+        this._moveDesired = new THREE.Vector3();
+        this._moveCandidate = new THREE.Vector3();
     }
 
     async build() {
@@ -92,6 +81,7 @@ export class Game {
         this.spawnPlayer();
         this.placeStatuesAndDoors();
         this.randomizeCorrectDoors();
+        this.bindInput();
         this.ui.showIntro();
     }
 
@@ -120,21 +110,6 @@ export class Game {
         const moaiHeight = moaiBox.max.y - moaiBox.min.y;
         this.moaiTemplateScale = cfg.moaiHeight / Math.max(0.001, moaiHeight);
         this.moaiTemplateMinY = moaiBox.min.y;
-        this.statueBaseHeight = clamp(cfg.moaiHeight * 0.15, 0.18, 0.28);
-        this.statueBaseRadius = clamp(cfg.moaiHeight * 0.28, 0.36, 0.52);
-        this.fireMouthY = Number.isFinite(cfg.fireMouthY) ? cfg.fireMouthY : this.statueBaseHeight + cfg.moaiHeight * 0.60;
-        this.fireForwardOffset = clamp(cfg.moaiHeight * 0.22, 0.28, 0.42);
-
-        this.statueStoneMat = new THREE.MeshStandardMaterial({
-            color: 0x5b5147,
-            roughness: 0.92,
-            metalness: 0.02
-        });
-        this.doorStoneMat = new THREE.MeshStandardMaterial({
-            color: 0x4b433b,
-            roughness: 0.9,
-            metalness: 0.02
-        });
     }
 
     layoutWorld() {
@@ -147,19 +122,9 @@ export class Game {
         const radiusXZ = 0.5 * Math.max(size.x, size.z);
         if (!isFinite(cfg.rOuter)) cfg.rOuter = radiusXZ * 0.86;
         if (!isFinite(cfg.rInner)) cfg.rInner = radiusXZ * 0.30;
-        if (!isFinite(cfg.bridgeY)) cfg.bridgeY = box.min.y + size.y * 0.52;
+        if (!isFinite(cfg.bridgeY)) cfg.bridgeY = box.min.y + size.y * 0.1;
 
         this.center = new THREE.Vector3(center.x, cfg.bridgeY, center.z);
-        this.tileSpacing = (cfg.rOuter - cfg.rInner) / Math.max(1, cfg.tiles - 1);
-        this.statueSideOffset = Number.isFinite(cfg.sideOffset) ? clamp(cfg.sideOffset, 0.75, 1.7) : clamp(this.tileSpacing * 0.55, 0.95, 1.45);
-        this.statueRadialOffset = clamp(this.tileSpacing * 0.16, 0.18, 0.42);
-        this.doorSetback = clamp(this.tileSpacing * 0.34, 0.45, 0.9);
-        this.cameraDistance = clamp(this.tileSpacing * 2.15, 4.8, 8.0);
-        this.cameraHeight = clamp(this.tileSpacing * 1.65, 3.8, 6.2);
-        this.cameraShoulder = clamp(this.tileSpacing * 0.36, 0.55, 1.2);
-        if (!Number.isFinite(cfg.fireScale)) {
-            cfg.fireScale = clamp(this.statueSideOffset * 0.16, 0.18, 0.28);
-        }
 
         for (let i = 0; i < cfg.bridges; i++) {
             const angle = cfg.bridgePhase + (i / cfg.bridges) * Math.PI * 2;
@@ -178,8 +143,8 @@ export class Game {
     drawDebug() {
         for (const b of this.bridges) {
             for (let t = 0; t < b.tiles.length; t++) {
-                const isFire = (t === 1 || t === b.tiles.length - 2);
                 const isDoor = (t === b.tiles.length - 1);
+                const isFire = !isDoor;
                 const color = isDoor ? 0x00ff00 : isFire ? 0xff3300 : 0x3399ff;
                 const m = new THREE.Mesh(
                     new THREE.CylinderGeometry(0.3, 0.3, 0.05, 16),
@@ -201,68 +166,75 @@ export class Game {
     spawnPlayer() {
         const group = new THREE.Group();
         const body = new THREE.Mesh(
-            new THREE.CapsuleGeometry(0.23, 0.68, 6, 12),
-            new THREE.MeshStandardMaterial({
-                color: 0x7a5434,
-                roughness: 0.78,
-                metalness: 0.03,
-                emissive: 0x2c1307,
-                emissiveIntensity: 0.3
-            })
+            new THREE.CapsuleGeometry(0.25, 0.7, 6, 12),
+            new THREE.MeshStandardMaterial({ color: 0xc8d4ff, roughness: 0.4, metalness: 0.05, emissive: 0x223366, emissiveIntensity: 0.4 })
         );
         body.position.y = 0.6;
         body.castShadow = false;
+        body.visible = false;
         group.add(body);
 
-        const marker = new THREE.Mesh(
-            new THREE.RingGeometry(0.34, 0.45, 16),
-            new THREE.MeshBasicMaterial({ color: 0xff9a3d, side: THREE.DoubleSide, transparent: true, opacity: 0.45 })
+        const halo = new THREE.Mesh(
+            new THREE.RingGeometry(0.35, 0.5, 24),
+            new THREE.MeshBasicMaterial({ color: 0x88ddff, side: THREE.DoubleSide, transparent: true, opacity: 0.7 })
         );
-        marker.rotation.x = -Math.PI / 2;
-        marker.position.y = 0.02;
-        group.add(marker);
-        this.playerMarker = marker;
+        halo.rotation.x = -Math.PI / 2;
+        halo.position.y = 0.02;
+        halo.visible = false;
+        group.add(halo);
+        this.playerHalo = halo;
 
-        const torch = new THREE.PointLight(0xff8a3d, 1.25, 5.5, 2.0);
+        const torch = new THREE.PointLight(0x88aaff, 1.4, 6, 2.0);
         torch.position.y = 1.2;
         group.add(torch);
 
         this.scene.add(group);
         this.player = group;
         this.player.position.copy(this.bridges[0].tiles[0]);
-        this.snapCameraToPlayer();
     }
 
     placeStatuesAndDoors() {
         for (const b of this.bridges) {
-            const outerStatue = this.makeStatue(1, b, +1, +1);
-            const innerStatue = this.makeStatue(b.tiles.length - 2, b, -1, -1);
-            outerStatue.fireTile = 1;
-            innerStatue.fireTile = b.tiles.length - 2;
-            outerStatue.firePhase = (b.index / cfg.bridges) * FIRE_PERIOD;
-            innerStatue.firePhase = (outerStatue.firePhase + FIRE_PERIOD * 0.5) % FIRE_PERIOD;
-            outerStatue.bridgeIndex = b.index;
-            innerStatue.bridgeIndex = b.index;
-            this.statues.push(outerStatue, innerStatue);
-            b.outerStatue = outerStatue;
-            b.innerStatue = innerStatue;
+            const doorTile = b.tiles.length - 1;
+            b.fireStatues = [];
+            for (let t = 0; t < doorTile; t++) {
+                const side = (t % 2 === 0) ? -1 : +1;
+                const statue = this.makeStatue(b.tiles[t], b, side);
+                statue.fireTile = t;
+                statue.firePhase = this.getFirePhase(b.index, t, doorTile);
+                statue.bridgeIndex = b.index;
+                this.statues.push(statue);
+                b.fireStatues.push(statue);
+            }
 
             const doorPos = b.tiles[b.tiles.length - 1].clone();
             const door = this.makeDoor(doorPos, b);
             this.doors.push(door);
             b.door = door;
         }
+
+        for (let i = 0; i < cfg.bridges; i++) {
+            const angle = cfg.bridgePhase + ((i + 0.5) / cfg.bridges) * Math.PI * 2;
+            const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+            const pos = this.center.clone().add(dir.clone().multiplyScalar(cfg.rOuter * 0.98));
+            const decor = this.makeStatueMesh(pos, dir.clone().multiplyScalar(-1));
+            this.scene.add(decor);
+        }
     }
 
-    makeStatue(tileIndex, bridge, side, radialSide) {
+    getFirePhase(bridgeIndex, tileIndex, fireTileCount) {
+        const tileStep = FIRE_PERIOD / Math.max(1, fireTileCount);
+        const bridgeStep = FIRE_PERIOD / Math.max(1, cfg.bridges);
+        return (tileIndex * tileStep + bridgeIndex * bridgeStep * 0.5) % FIRE_PERIOD;
+    }
+
+    makeStatue(tilePos, bridge, side) {
         const group = new THREE.Group();
         this.scene.add(group);
 
-        const tilePos = bridge.tiles[tileIndex];
-        const lateral = new THREE.Vector3().crossVectors(bridge.dir, WORLD_UP).normalize();
-        const sideVec = lateral.clone().multiplyScalar(side * this.statueSideOffset);
-        const radialVec = bridge.dir.clone().multiplyScalar(radialSide * this.statueRadialOffset);
-        const statuePos = tilePos.clone().add(sideVec).add(radialVec);
+        const lateral = new THREE.Vector3().crossVectors(bridge.dir, new THREE.Vector3(0, 1, 0)).normalize();
+        const sideVec = lateral.clone().multiplyScalar(side * cfg.sideOffset);
+        const statuePos = tilePos.clone().add(sideVec);
 
         const facingDir = sideVec.clone().multiplyScalar(-1).normalize();
         const moai = this.makeStatueMesh(statuePos, facingDir);
@@ -270,8 +242,8 @@ export class Game {
 
         const fireOrigin = new THREE.Object3D();
         fireOrigin.position.copy(statuePos);
-        fireOrigin.position.y += this.fireMouthY;
-        fireOrigin.position.add(facingDir.clone().multiplyScalar(this.fireForwardOffset));
+        fireOrigin.position.y += cfg.fireMouthY;
+        fireOrigin.position.add(facingDir.clone().multiplyScalar(0.3));
         this.scene.add(fireOrigin);
         const flame = buildFlamethrower(fireOrigin, this.renderer, {
             scale: cfg.fireScale,
@@ -297,35 +269,18 @@ export class Game {
     makeStatueMesh(position, facingDir) {
         const inner = this.moaiTemplate.clone(true);
         inner.scale.setScalar(this.moaiTemplateScale);
-        inner.position.y = this.statueBaseHeight - this.moaiTemplateMinY * this.moaiTemplateScale - 0.02;
+        inner.position.y = -this.moaiTemplateMinY * this.moaiTemplateScale;
 
         const wrap = new THREE.Group();
-        const base = new THREE.Mesh(
-            new THREE.CylinderGeometry(this.statueBaseRadius, this.statueBaseRadius * 1.12, this.statueBaseHeight, 8),
-            this.statueStoneMat
-        );
-        base.position.y = this.statueBaseHeight * 0.5;
-        wrap.add(base);
         wrap.add(inner);
         wrap.position.copy(position);
         wrap.lookAt(position.clone().add(facingDir));
+        wrap.rotateY(MOAI_FACE_YAW);
 
-        const stoneTint = new THREE.Color(0x5d554c);
         wrap.traverse(o => {
             if (o.isMesh) {
                 o.castShadow = false;
                 o.receiveShadow = false;
-                if (o !== base && o.material) {
-                    const materials = Array.isArray(o.material) ? o.material : [o.material];
-                    const styled = materials.map(material => {
-                        const clone = material.clone();
-                        if (clone.color) clone.color.lerp(stoneTint, 0.48);
-                        if ('roughness' in clone) clone.roughness = Math.max(clone.roughness ?? 0, 0.82);
-                        if ('metalness' in clone) clone.metalness = Math.min(clone.metalness ?? 0, 0.04);
-                        return clone;
-                    });
-                    o.material = Array.isArray(o.material) ? styled : styled[0];
-                }
             }
         });
         return wrap;
@@ -333,41 +288,29 @@ export class Game {
 
     makeDoor(position, bridge) {
         const group = new THREE.Group();
-        const frameMat = this.doorStoneMat;
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0x2a1f15, roughness: 0.8, metalness: 0.2 });
         const slabMat = new THREE.MeshStandardMaterial({
-            color: 0x17110d, roughness: 0.86, metalness: 0.05,
-            emissive: 0x120603, emissiveIntensity: 0.18
+            color: 0x1a0d08, roughness: 0.7, metalness: 0.3,
+            emissive: 0x110200, emissiveIntensity: 0.3
         });
-        const emberMat = new THREE.MeshStandardMaterial({
-            color: 0xff8a33,
-            emissive: 0xff3a12,
-            emissiveIntensity: 0.45,
-            roughness: 0.55,
-            transparent: true,
-            opacity: 0.78
-        });
+        const frame = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.4, 0.3), frameMat);
+        frame.position.set(0, 1.2, 0);
+        const slab = new THREE.Mesh(new THREE.BoxGeometry(1.2, 2.0, 0.15), slabMat);
+        slab.position.set(0, 1.0, 0.1);
+        group.add(frame, slab);
 
-        const leftPillar = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.65, 0.38), frameMat);
-        leftPillar.position.set(-0.68, 0.85, 0);
-        const rightPillar = leftPillar.clone();
-        rightPillar.position.x = 0.68;
-        const lintel = new THREE.Mesh(new THREE.BoxGeometry(1.62, 0.32, 0.42), frameMat);
-        lintel.position.set(0, 1.76, 0);
-        const threshold = new THREE.Mesh(new THREE.BoxGeometry(1.48, 0.16, 0.56), frameMat);
-        threshold.position.set(0, 0.08, 0.06);
-        const slab = new THREE.Mesh(new THREE.BoxGeometry(0.98, 1.34, 0.12), slabMat);
-        slab.position.set(0, 0.82, 0.1);
-        const emberSlit = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.86, 0.03), emberMat);
-        emberSlit.position.set(0, 0.86, 0.18);
-        group.add(leftPillar, rightPillar, lintel, threshold, slab, emberSlit);
+        const ringGeo = new THREE.TorusGeometry(0.6, 0.04, 8, 32);
+        const ringMat = new THREE.MeshStandardMaterial({ color: 0xffaa44, emissive: 0x441100, emissiveIntensity: 0.5 });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        ring.position.set(0, 1.0, 0.2);
+        group.add(ring);
 
+        group.position.copy(position);
         const inward = new THREE.Vector3().subVectors(this.center, position).setY(0).normalize();
-        const doorPosition = position.clone().add(inward.clone().multiplyScalar(this.doorSetback));
-        group.position.copy(doorPosition);
-        group.lookAt(doorPosition.clone().add(inward));
+        group.lookAt(position.clone().add(inward));
         this.scene.add(group);
 
-        return { group, slab, emberSlit, position: position.clone(), bridgeIndex: bridge.index, emberMat };
+        return { group, slab, ring, position: position.clone(), bridgeIndex: bridge.index, ringMat };
     }
 
     randomizeCorrectDoors() {
@@ -382,41 +325,64 @@ export class Game {
     }
 
     bindInput() {
-        const onKeyDown = (e) => {
+        const canvas = this.renderer.domElement;
+        canvas.tabIndex = 0;
+
+        window.addEventListener('keydown', (e) => {
+            if (this.isGameplayKey(e.code)) e.preventDefault();
             this.keys[e.code] = true;
 
             if (this.state === STATE.INTRO) {
-                if (e.code === 'Enter' || e.code === 'Space') this.startRun();
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    this.startRun();
+                    this.tryPointerLock();
+                }
                 return;
             }
             if (this.state === STATE.WON || this.state === STATE.BURNED || this.state === STATE.WRONG_DOOR) {
-                if (e.code === 'KeyR' || e.code === 'Enter' || e.code === 'Space') this.restart();
+                if (e.code === 'KeyR' || e.code === 'Enter' || e.code === 'Space') {
+                    this.restart();
+                    this.tryPointerLock();
+                }
                 return;
             }
             if (this.state !== STATE.PLAYING || this.moveAnim) return;
 
             switch (e.code) {
-                case 'ArrowUp': case 'KeyW': this.tryStepForward(); break;
-                case 'ArrowDown': case 'KeyS': this.tryStepBack(); break;
-                case 'ArrowLeft': case 'KeyA': this.tryRotateBridge(-1); break;
-                case 'ArrowRight': case 'KeyD': this.tryRotateBridge(+1); break;
+                case 'ArrowUp': case 'KeyW': this.tryMoveRelative(1, 0); break;
+                case 'ArrowDown': case 'KeyS': this.tryMoveRelative(-1, 0); break;
+                case 'ArrowLeft': case 'KeyA': this.tryMoveRelative(0, -1); break;
+                case 'ArrowRight': case 'KeyD': this.tryMoveRelative(0, 1); break;
                 case 'KeyE': case 'Space': this.tryEnterDoor(); break;
             }
-        };
-
-        document.addEventListener('keydown', onKeyDown);
-        document.addEventListener('pointerdown', () => {
-            if (this.state === STATE.INTRO) this.startRun();
         });
-        document.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+        window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+
+        canvas.addEventListener('pointerdown', (e) => {
+            if (this.state !== STATE.PLAYING) return;
+            this.lookDragging = true;
+            canvas.focus();
+            this.tryPointerLock();
+            e.preventDefault();
+        });
+        window.addEventListener('pointerup', () => { this.lookDragging = false; });
+        window.addEventListener('mousemove', (e) => {
+            if (this.state !== STATE.PLAYING) return;
+            if (document.pointerLockElement === canvas || this.lookDragging) {
+                this.rotateCamera(e.movementX, e.movementY);
+            }
+        });
     }
 
     startRun() {
         this.state = STATE.PLAYING;
+        this.elapsed = 0;
         this.playerBridge = 0;
         this.playerTile = 0;
         this.player.position.copy(this.bridges[0].tiles[0]);
-        this.snapCameraToPlayer();
+        this.cameraYaw = this.bridges[0].angle + Math.PI;
+        this.cameraPitch = 0;
+        this.startGraceUntil = this.elapsed + START_GRACE;
         this.ui.hideIntro();
         this.ui.update(this);
     }
@@ -427,23 +393,100 @@ export class Game {
         this.ui.hideOverlay();
     }
 
-    tryStepForward() {
-        if (this.playerTile >= cfg.tiles - 1) return;
-        this.beginMove(this.playerBridge, this.playerTile + 1);
+    isGameplayKey(code) {
+        return code === 'ArrowUp' || code === 'ArrowDown' || code === 'ArrowLeft' || code === 'ArrowRight' ||
+            code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD' ||
+            code === 'KeyE' || code === 'Space' || code === 'Enter' || code === 'KeyR';
     }
-    tryStepBack() {
-        if (this.playerTile <= 0) return;
-        this.beginMove(this.playerBridge, this.playerTile - 1);
+
+    tryPointerLock() {
+        const canvas = this.renderer.domElement;
+        if (document.pointerLockElement === canvas || !canvas.requestPointerLock) return;
+        try {
+            const request = canvas.requestPointerLock();
+            if (request && request.catch) request.catch(() => {});
+        } catch (e) {
+            // Drag-look still works when pointer lock is denied by the browser.
+        }
     }
-    tryRotateBridge(dir) {
-        if (this.playerTile !== 0) return;
-        const next = (this.playerBridge + dir + cfg.bridges) % cfg.bridges;
-        this.beginMove(next, 0);
+
+    releasePointerLock() {
+        if (document.pointerLockElement === this.renderer.domElement && document.exitPointerLock) {
+            document.exitPointerLock();
+        }
     }
+
+    rotateCamera(deltaX, deltaY) {
+        this.cameraYaw += deltaX * LOOK_SENSITIVITY;
+        this.cameraPitch = THREE.MathUtils.clamp(
+            this.cameraPitch - deltaY * LOOK_SENSITIVITY,
+            -MAX_CAMERA_PITCH,
+            MAX_CAMERA_PITCH
+        );
+    }
+
+    updateCameraBasis() {
+        this._cameraForward.set(Math.cos(this.cameraYaw), 0, Math.sin(this.cameraYaw));
+        this._cameraRight.crossVectors(this._cameraForward, WORLD_UP).normalize();
+    }
+
+    tryMoveRelative(forwardScale, sideScale) {
+        this.updateCameraBasis();
+        this._moveDesired.set(0, 0, 0)
+            .addScaledVector(this._cameraForward, forwardScale)
+            .addScaledVector(this._cameraRight, sideScale);
+
+        if (this._moveDesired.lengthSq() < 1e-6) return;
+        this._moveDesired.normalize();
+        this.tryMoveToward(this._moveDesired);
+    }
+
+    tryMoveToward(direction) {
+        let bestBridge = this.playerBridge;
+        let bestTile = this.playerTile;
+        let bestDot = MOVE_DOT_THRESHOLD;
+        const currentBridge = this.bridges[this.playerBridge];
+        const lastTile = currentBridge.tiles.length - 1;
+
+        const consider = (bridgeIndex, tileIndex) => {
+            const bridge = this.bridges[bridgeIndex];
+            if (!bridge || tileIndex < 0 || tileIndex >= bridge.tiles.length) return;
+            const currentPos = currentBridge.tiles[this.playerTile];
+            const nextPos = bridge.tiles[tileIndex];
+            this._moveCandidate.subVectors(nextPos, currentPos).setY(0);
+            if (this._moveCandidate.lengthSq() < 1e-6) return;
+            this._moveCandidate.normalize();
+
+            const dot = this._moveCandidate.dot(direction);
+            if (dot > bestDot) {
+                bestDot = dot;
+                bestBridge = bridgeIndex;
+                bestTile = tileIndex;
+            }
+        };
+
+        if (this.playerTile < lastTile) consider(this.playerBridge, this.playerTile + 1);
+        if (this.playerTile > 0) consider(this.playerBridge, this.playerTile - 1);
+        if (this.playerTile === 0) {
+            consider((this.playerBridge - 1 + cfg.bridges) % cfg.bridges, 0);
+            consider((this.playerBridge + 1) % cfg.bridges, 0);
+        }
+
+        if (bestBridge !== this.playerBridge || bestTile !== this.playerTile) {
+            this.beginMove(bestBridge, bestTile);
+        }
+    }
+
     tryEnterDoor() {
         if (this.playerTile !== cfg.tiles - 1) return;
         const correct = this.correctDoors.has(this.playerBridge);
-        this.state = correct ? STATE.WON : STATE.WRONG_DOOR;
+        this.finishRun(correct ? STATE.WON : STATE.WRONG_DOOR);
+    }
+
+    finishRun(state) {
+        this.state = state;
+        this.lookDragging = false;
+        this.releasePointerLock();
         this.ui.showOutcome(this.state);
     }
 
@@ -476,12 +519,12 @@ export class Game {
         this.updateCamera(dt);
         this.manager.update();
 
-        if (this.playerMarker) {
-            this.playerMarker.material.opacity = 0.38 + Math.sin(this.elapsed * 4) * 0.12;
-            this.playerMarker.rotation.z += dt * 1.5;
+        if (this.playerHalo) {
+            this.playerHalo.material.opacity = 0.5 + Math.sin(this.elapsed * 4) * 0.2;
+            this.playerHalo.rotation.z += dt * 1.5;
         }
         for (const door of this.doors) {
-            door.emberMat.emissiveIntensity = 0.32 + Math.sin(this.elapsed * 1.7 + door.bridgeIndex) * 0.12;
+            door.ringMat.emissiveIntensity = 0.5 + Math.sin(this.elapsed * 2 + door.bridgeIndex) * 0.2;
         }
     }
 
@@ -519,41 +562,28 @@ export class Game {
 
     checkBurn() {
         if (this.state !== STATE.PLAYING || this.moveAnim) return;
+        if (this.elapsed < this.startGraceUntil) return;
         const bridge = this.bridges[this.playerBridge];
-        const outer = bridge.outerStatue;
-        const inner = bridge.innerStatue;
-        const onOuterDanger = (this.playerTile === outer.fireTile);
-        const onInnerDanger = (this.playerTile === inner.fireTile);
-
-        if ((onOuterDanger && outer.isFireActive) || (onInnerDanger && inner.isFireActive)) {
-            this.state = STATE.BURNED;
-            this.ui.showOutcome(STATE.BURNED);
+        for (const statue of bridge.fireStatues) {
+            if (this.playerTile === statue.fireTile && statue.isFireActive) {
+                this.finishRun(STATE.BURNED);
+                return;
+            }
         }
     }
 
     updateCamera(dt) {
-        const { position, target } = this.getCameraPose();
-        this.camera.position.lerp(position, 1 - Math.exp(-dt * 5));
-        this.camera.lookAt(target);
-    }
+        this._cameraPos.copy(this.player.position);
+        this._cameraPos.y += CAMERA_EYE_HEIGHT;
+        this.camera.position.copy(this._cameraPos);
 
-    snapCameraToPlayer() {
-        const { position, target } = this.getCameraPose();
-        this.camera.position.copy(position);
-        this.camera.lookAt(target);
-    }
-
-    getCameraPose() {
-        const target = this.player.position.clone();
-        const radial = new THREE.Vector3().subVectors(target, this.center).setY(0);
-        const radialN = radial.lengthSq() > 1e-4 ? radial.clone().normalize() : new THREE.Vector3(1, 0, 0);
-        const tangent = new THREE.Vector3(-radialN.z, 0, radialN.x).multiplyScalar(this.cameraShoulder);
-        const position = target.clone()
-            .add(radialN.multiplyScalar(this.cameraDistance))
-            .add(tangent)
-            .add(WORLD_UP.clone().multiplyScalar(this.cameraHeight));
-        target.y += CAMERA_TARGET_HEIGHT;
-        return { position, target };
+        const pitchCos = Math.cos(this.cameraPitch);
+        this._cameraTarget.set(
+            this._cameraPos.x + Math.cos(this.cameraYaw) * pitchCos,
+            this._cameraPos.y + Math.sin(this.cameraPitch),
+            this._cameraPos.z + Math.sin(this.cameraYaw) * pitchCos
+        );
+        this.camera.lookAt(this._cameraTarget);
     }
 
     render() {
