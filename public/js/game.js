@@ -104,7 +104,7 @@ export class Game {
         const radiusXZ = 0.5 * Math.max(size.x, size.z);
         if (!isFinite(cfg.rOuter)) cfg.rOuter = radiusXZ * 0.86;
         if (!isFinite(cfg.rInner)) cfg.rInner = radiusXZ * 0.30;
-        if (!isFinite(cfg.bridgeY)) cfg.bridgeY = box.min.y;
+        if (!isFinite(cfg.bridgeY)) cfg.bridgeY = box.min.y + size.y * 0.1;
 
         this.center = new THREE.Vector3(center.x, cfg.bridgeY, center.z);
 
