@@ -151,7 +151,7 @@ export class Game {
 
         this.center = new THREE.Vector3(center.x, cfg.bridgeY, center.z);
         this.tileSpacing = (cfg.rOuter - cfg.rInner) / Math.max(1, cfg.tiles - 1);
-        this.statueSideOffset = Number.isFinite(cfg.sideOffset) ? cfg.sideOffset : clamp(this.tileSpacing * 0.55, 0.95, 1.45);
+        this.statueSideOffset = Number.isFinite(cfg.sideOffset) ? clamp(cfg.sideOffset, 0.75, 1.7) : clamp(this.tileSpacing * 0.55, 0.95, 1.45);
         this.statueRadialOffset = clamp(this.tileSpacing * 0.16, 0.18, 0.42);
         this.doorSetback = clamp(this.tileSpacing * 0.34, 0.45, 0.9);
         this.cameraDistance = clamp(this.tileSpacing * 2.15, 4.8, 8.0);
@@ -382,7 +382,7 @@ export class Game {
     }
 
     bindInput() {
-        window.addEventListener('keydown', (e) => {
+        const onKeyDown = (e) => {
             this.keys[e.code] = true;
 
             if (this.state === STATE.INTRO) {
@@ -402,8 +402,13 @@ export class Game {
                 case 'ArrowRight': case 'KeyD': this.tryRotateBridge(+1); break;
                 case 'KeyE': case 'Space': this.tryEnterDoor(); break;
             }
+        };
+
+        document.addEventListener('keydown', onKeyDown);
+        document.addEventListener('pointerdown', () => {
+            if (this.state === STATE.INTRO) this.startRun();
         });
-        window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+        document.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
     }
 
     startRun() {
