@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import * as Photons from '../lib/photons.module.js';
 import { GLTFLoader } from './GltfLoader.js';
-import { MeshoptDecoder } from '../lib/meshopt_decoder.module.js';
 import { buildFlamethrower } from './flamethrower.js';
 
 const params = new URLSearchParams(location.search);
@@ -86,6 +85,7 @@ export class Game {
     }
 
     async loadAssets() {
+        const MeshoptDecoder = await this.loadMeshoptDecoder();
         const loader = new GLTFLoader();
         loader.setMeshoptDecoder(MeshoptDecoder);
         const [temple, moai] = await Promise.all([
@@ -110,6 +110,15 @@ export class Game {
         const moaiHeight = moaiBox.max.y - moaiBox.min.y;
         this.moaiTemplateScale = cfg.moaiHeight / Math.max(0.001, moaiHeight);
         this.moaiTemplateMinY = moaiBox.min.y;
+    }
+
+    async loadMeshoptDecoder() {
+        try {
+            const module = await import('../lib/meshopt_decoder.module.js');
+            return module.MeshoptDecoder;
+        } catch (error) {
+            throw new Error('Missing meshopt decoder: public/lib/meshopt_decoder.module.js');
+        }
     }
 
     layoutWorld() {
