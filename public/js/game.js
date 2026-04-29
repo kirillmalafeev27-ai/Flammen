@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import * as Photons from '../lib/photons.module.js';
 import { GLTFLoader } from './GltfLoader.js';
 import { buildFlamethrower } from './flamethrower.js';
+import { QuestionBank } from './questions.js';
 
 const params = new URLSearchParams(location.search);
 const cfg = {
@@ -20,9 +21,20 @@ const cfg = {
 };
 
 const TURN_DURATION = 0.18;
-const FIRE_PERIOD = 3.0;
-const FIRE_WARNING = 0.5;
-const FIRE_DURATION = 1.0;
+const BASE_FIRE_PERIOD = 4.8;
+const BASE_FIRE_WARNING = 0.65;
+const BASE_FIRE_DURATION = 1.55;
+const CAMERA_EYE_HEIGHT = 1.35;
+const LOOK_SENSITIVITY = 0.0022;
+const MAX_CAMERA_PITCH = Math.PI * 0.42;
+const MOVE_DOT_THRESHOLD = 0.35;
+const START_GRACE = 0.8;
+const ANSWER_MARKER_SPEED = 1.08;
+const ANSWER_MARKER_SLOW = 0.46;
+const FAST_ANSWER_SECONDS = 2.9;
+const TIMER_PEEK_SECONDS = 2.6;
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+const MOAI_FACE_YAW = Math.PI;
 
 const STATE = {
     INTRO: 'intro',
@@ -31,6 +43,87 @@ const STATE = {
     WRONG_DOOR: 'wrong_door',
     WON: 'won'
 };
+
+const LEVELS = {
+    1: {
+        name: 'Бегающие огни',
+        short: 'ритм',
+        period: BASE_FIRE_PERIOD,
+        warning: BASE_FIRE_WARNING,
+        duration: BASE_FIRE_DURATION,
+        heatSpeed: 1.0,
+        bank: false,
+        falseHeats: false,
+        fastAlternate: false,
+        finalDoorTrial: false
+    },
+    2: {
+        name: 'Шлюз',
+        short: 'ожидание',
+        period: 5.2,
+        warning: 0.95,
+        duration: 1.85,
+        heatSpeed: 1.0,
+        gateOffset: true,
+        bank: false,
+        falseHeats: false,
+        fastAlternate: false,
+        finalDoorTrial: false
+    },
+    3: {
+        name: 'Ложные нагревы',
+        short: 'чтение',
+        period: 4.9,
+        warning: 0.75,
+        duration: 1.45,
+        heatSpeed: 1.0,
+        bank: false,
+        falseHeats: true,
+        fastAlternate: false,
+        finalDoorTrial: false
+    },
+    4: {
+        name: 'Банк вопросов',
+        short: 'заготовка',
+        period: 4.6,
+        warning: 0.62,
+        duration: 1.35,
+        heatSpeed: 1.03,
+        bank: true,
+        falseHeats: false,
+        fastAlternate: true,
+        finalDoorTrial: false
+    },
+    5: {
+        name: 'Суд дверей',
+        short: 'риск',
+        period: 4.4,
+        warning: 0.7,
+        duration: 1.5,
+        heatSpeed: 1.06,
+        bank: false,
+        falseHeats: true,
+        fastAlternate: true,
+        finalDoorTrial: true
+    }
+};
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function shuffle(items) {
+    const copy = [...items];
+    for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+}
+
+function moveKey(bridgeIndex, tileIndex) {
+    return `${bridgeIndex}:${tileIndex}`;
+}
 
 export class Game {
     constructor(scene, camera, renderer, ui) {
@@ -41,20 +134,65 @@ export class Game {
         this.clock = new THREE.Clock();
         this.elapsed = 0;
         this.manager = new Photons.Manager();
+        this.questionBank = new QuestionBank();
 
         this.state = STATE.INTRO;
+        this.currentLevel = 1;
+        this.settings = {};
         this.bridges = [];
         this.statues = [];
         this.doors = [];
         this.correctDoors = new Set();
+        this.revealedFalseDoors = new Set();
+        this.groupHintDoors = new Set();
+        this.groupHintUntil = 0;
+        this.closedBridges = new Map();
 
         this.player = null;
         this.playerBridge = 0;
         this.playerTile = 0;
         this.moveAnim = null;
+        this.movesMade = 0;
 
         this.keys = {};
-        this.bindInput();
+        this.cameraYaw = 0;
+        this.cameraPitch = 0;
+        this.lookDragging = false;
+        this.startGraceUntil = 0;
+
+        this.currentQuestion = null;
+        this.questionLoading = false;
+        this.questionRequestToken = null;
+        this.preparedMove = null;
+        this.bankedMoves = new Map();
+        this.answerSlowHeld = false;
+        this.answerMarkerPosition = 0;
+        this.answerMarkerIndex = 0;
+        this.correctAnswerStreak = 0;
+        this.questionsAnswered = 0;
+        this.questionsCorrect = 0;
+
+        this.fireWaveUntil = 0;
+        this.globalHeatUntil = 0;
+        this.peekUntil = 0;
+        this.peekHeatUntil = 0;
+
+        this.bonusAltar = null;
+        this.altarAnswers = [];
+
+        this.audioContext = null;
+
+        this._cameraPos = new THREE.Vector3();
+        this._cameraTarget = new THREE.Vector3();
+        this._cameraForward = new THREE.Vector3();
+        this._cameraRight = new THREE.Vector3();
+        this._moveDesired = new THREE.Vector3();
+        this._moveCandidate = new THREE.Vector3();
+        this._timerRows = [
+            { label: '', state: '', seconds: 0 },
+            { label: '', state: '', seconds: 0 },
+            { label: '', state: '', seconds: 0 }
+        ];
     }
 
     async build() {
@@ -63,11 +201,14 @@ export class Game {
         this.spawnPlayer();
         this.placeStatuesAndDoors();
         this.randomizeCorrectDoors();
+        this.bindInput();
         this.ui.showIntro();
     }
 
     async loadAssets() {
+        const MeshoptDecoder = await this.loadMeshoptDecoder();
         const loader = new GLTFLoader();
+        loader.setMeshoptDecoder(MeshoptDecoder);
         const [temple, moai] = await Promise.all([
             loader.loadAsync('assets/temple.glb'),
             loader.loadAsync('assets/moai.glb')
@@ -92,6 +233,15 @@ export class Game {
         this.moaiTemplateMinY = moaiBox.min.y;
     }
 
+    async loadMeshoptDecoder() {
+        try {
+            const module = await import('../lib/meshopt_decoder.module.js');
+            return module.MeshoptDecoder;
+        } catch (error) {
+            throw new Error('Missing meshopt decoder: public/lib/meshopt_decoder.module.js');
+        }
+    }
+
     layoutWorld() {
         const box = new THREE.Box3().setFromObject(this.templeRoot);
         const size = new THREE.Vector3();
@@ -102,7 +252,7 @@ export class Game {
         const radiusXZ = 0.5 * Math.max(size.x, size.z);
         if (!isFinite(cfg.rOuter)) cfg.rOuter = radiusXZ * 0.86;
         if (!isFinite(cfg.rInner)) cfg.rInner = radiusXZ * 0.30;
-        if (!isFinite(cfg.bridgeY)) cfg.bridgeY = box.min.y + size.y * 0.52;
+        if (!isFinite(cfg.bridgeY)) cfg.bridgeY = box.min.y + size.y * 0.1;
 
         this.center = new THREE.Vector3(center.x, cfg.bridgeY, center.z);
 
@@ -123,9 +273,8 @@ export class Game {
     drawDebug() {
         for (const b of this.bridges) {
             for (let t = 0; t < b.tiles.length; t++) {
-                const isFire = (t === 1 || t === b.tiles.length - 2);
                 const isDoor = (t === b.tiles.length - 1);
-                const color = isDoor ? 0x00ff00 : isFire ? 0xff3300 : 0x3399ff;
+                const color = isDoor ? 0x00ff00 : 0xff3300;
                 const m = new THREE.Mesh(
                     new THREE.CylinderGeometry(0.3, 0.3, 0.05, 16),
                     new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.7 })
@@ -151,6 +300,7 @@ export class Game {
         );
         body.position.y = 0.6;
         body.castShadow = false;
+        body.visible = false;
         group.add(body);
 
         const halo = new THREE.Mesh(
@@ -159,6 +309,7 @@ export class Game {
         );
         halo.rotation.x = -Math.PI / 2;
         halo.position.y = 0.02;
+        halo.visible = false;
         group.add(halo);
         this.playerHalo = halo;
 
@@ -173,17 +324,18 @@ export class Game {
 
     placeStatuesAndDoors() {
         for (const b of this.bridges) {
-            const outerStatue = this.makeStatue(b.tiles[1], b, +1);
-            const innerStatue = this.makeStatue(b.tiles[b.tiles.length - 2], b, -1);
-            outerStatue.fireTile = 1;
-            innerStatue.fireTile = b.tiles.length - 2;
-            outerStatue.firePhase = Math.random() * FIRE_PERIOD;
-            innerStatue.firePhase = (Math.random() * FIRE_PERIOD + FIRE_PERIOD * 0.5) % FIRE_PERIOD;
-            outerStatue.bridgeIndex = b.index;
-            innerStatue.bridgeIndex = b.index;
-            this.statues.push(outerStatue, innerStatue);
-            b.outerStatue = outerStatue;
-            b.innerStatue = innerStatue;
+            const doorTile = b.tiles.length - 1;
+            b.fireStatues = [];
+            for (let t = 0; t < doorTile; t++) {
+                const side = (t % 2 === 0) ? -1 : +1;
+                const statue = this.makeStatue(b.tiles[t], b, side);
+                statue.fireTile = t;
+                statue.phaseRatio = this.getFirePhase(b.index, t, doorTile) / BASE_FIRE_PERIOD;
+                statue.bridgeIndex = b.index;
+                statue.falsePhase = (b.index * 1.37 + t * 2.11) % 7.4;
+                this.statues.push(statue);
+                b.fireStatues.push(statue);
+            }
 
             const doorPos = b.tiles[b.tiles.length - 1].clone();
             const door = this.makeDoor(doorPos, b);
@@ -198,6 +350,14 @@ export class Game {
             const decor = this.makeStatueMesh(pos, dir.clone().multiplyScalar(-1));
             this.scene.add(decor);
         }
+
+        this.placeBonusAltar();
+    }
+
+    getFirePhase(bridgeIndex, tileIndex, fireTileCount) {
+        const tileStep = BASE_FIRE_PERIOD / Math.max(1, fireTileCount);
+        const bridgeStep = BASE_FIRE_PERIOD / Math.max(1, cfg.bridges);
+        return (tileIndex * tileStep + bridgeIndex * bridgeStep * 0.5) % BASE_FIRE_PERIOD;
     }
 
     makeStatue(tilePos, bridge, side) {
@@ -232,9 +392,20 @@ export class Game {
         eyeLight.position.copy(fireOrigin.position);
         this.scene.add(eyeLight);
 
+        const coalMat = new THREE.MeshBasicMaterial({
+            color: 0xff5522,
+            transparent: true,
+            opacity: 0.08,
+            depthWrite: false
+        });
+        const coal = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 8), coalMat);
+        coal.position.copy(fireOrigin.position);
+        this.scene.add(coal);
+
         return {
-            group, fireOrigin, flame, eyeLight,
-            position: statuePos, facing: facingDir, tilePosition: tilePos.clone()
+            group, fireOrigin, flame, eyeLight, coal, coalMat,
+            position: statuePos, facing: facingDir, tilePosition: tilePos.clone(),
+            heatOffset: 0, isFireActive: false, visualState: 'cold'
         };
     }
 
@@ -247,6 +418,7 @@ export class Game {
         wrap.add(inner);
         wrap.position.copy(position);
         wrap.lookAt(position.clone().add(facingDir));
+        wrap.rotateY(MOAI_FACE_YAW);
 
         wrap.traverse(o => {
             if (o.isMesh) {
@@ -276,12 +448,55 @@ export class Game {
         ring.position.set(0, 1.0, 0.2);
         group.add(ring);
 
+        const symbolMat = new THREE.MeshBasicMaterial({
+            color: 0xffcc66,
+            side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0
+        });
+        const symbol = new THREE.Mesh(new THREE.RingGeometry(0.2, 0.27, 3), symbolMat);
+        symbol.position.set(0, 0.045, -0.9);
+        symbol.rotation.x = -Math.PI / 2;
+        group.add(symbol);
+
         group.position.copy(position);
         const inward = new THREE.Vector3().subVectors(this.center, position).setY(0).normalize();
         group.lookAt(position.clone().add(inward));
         this.scene.add(group);
 
-        return { group, slab, ring, position: position.clone(), bridgeIndex: bridge.index, ringMat };
+        return {
+            group, slab, ring, symbol, position: position.clone(),
+            bridgeIndex: bridge.index, ringMat, slabMat, symbolMat
+        };
+    }
+
+    placeBonusAltar() {
+        const bridgeIndex = Math.floor(cfg.bridges / 2);
+        const bridge = this.bridges[bridgeIndex];
+        const lateral = new THREE.Vector3().crossVectors(bridge.dir, WORLD_UP).normalize();
+        const position = bridge.tiles[0].clone().add(lateral.multiplyScalar(1.15));
+
+        const group = new THREE.Group();
+        const base = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.42, 0.56, 0.18, 18),
+            new THREE.MeshStandardMaterial({ color: 0x221716, roughness: 0.72, metalness: 0.12 })
+        );
+        base.position.y = 0.09;
+        const bowl = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.32, 0.22, 0.18, 18),
+            new THREE.MeshStandardMaterial({ color: 0x4a2212, roughness: 0.45, metalness: 0.25, emissive: 0x2a0800, emissiveIntensity: 0.5 })
+        );
+        bowl.position.y = 0.28;
+        const gemMat = new THREE.MeshBasicMaterial({ color: 0xffa23a, transparent: true, opacity: 0.86 });
+        const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.18), gemMat);
+        gem.position.y = 0.58;
+        const light = new THREE.PointLight(0xff7a22, 1.2, 4.5, 2.0);
+        light.position.y = 0.7;
+        group.add(base, bowl, gem, light);
+        group.position.copy(position);
+        this.scene.add(group);
+
+        this.bonusAltar = { bridgeIndex, group, gem, gemMat, light, used: false };
     }
 
     randomizeCorrectDoors() {
@@ -293,66 +508,539 @@ export class Game {
         }
         this.correctDoors.add(idx[0]);
         this.correctDoors.add(idx[1]);
+        this.refreshDoorVisuals();
     }
 
     bindInput() {
+        const canvas = this.renderer.domElement;
+        canvas.tabIndex = 0;
+
         window.addEventListener('keydown', (e) => {
+            if (this.isGameplayKey(e.code)) e.preventDefault();
             this.keys[e.code] = true;
 
             if (this.state === STATE.INTRO) {
-                if (e.code === 'Enter' || e.code === 'Space') this.startRun();
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    this.ui.requestStart();
+                }
                 return;
             }
+
             if (this.state === STATE.WON || this.state === STATE.BURNED || this.state === STATE.WRONG_DOOR) {
-                if (e.code === 'KeyR' || e.code === 'Enter' || e.code === 'Space') this.restart();
+                if (e.code === 'KeyR' || e.code === 'Enter' || e.code === 'Space') {
+                    this.restart();
+                }
                 return;
             }
-            if (this.state !== STATE.PLAYING || this.moveAnim) return;
+
+            if (this.state !== STATE.PLAYING) return;
+
+            if (this.currentQuestion) {
+                if (e.code === 'Enter' || e.code === 'Space') {
+                    this.confirmAnswer();
+                }
+                return;
+            }
+
+            if (this.questionLoading) return;
+
+            if (e.code === 'KeyF') {
+                this.peekTimers();
+                return;
+            }
+
+            if (this.moveAnim) return;
 
             switch (e.code) {
-                case 'ArrowUp': case 'KeyW': this.tryStepForward(); break;
-                case 'ArrowDown': case 'KeyS': this.tryStepBack(); break;
-                case 'ArrowLeft': case 'KeyA': this.tryRotateBridge(-1); break;
-                case 'ArrowRight': case 'KeyD': this.tryRotateBridge(+1); break;
-                case 'KeyE': case 'Space': this.tryEnterDoor(); break;
+                case 'ArrowUp': case 'KeyW': this.tryMoveRelative(1, 0); break;
+                case 'ArrowDown': case 'KeyS': this.tryMoveRelative(-1, 0); break;
+                case 'ArrowLeft': case 'KeyA': this.tryMoveRelative(0, -1); break;
+                case 'ArrowRight': case 'KeyD': this.tryMoveRelative(0, 1); break;
+                case 'KeyE':
+                case 'Space':
+                    if (!this.tryEnterDoor()) this.tryActivateBonusAltar();
+                    break;
             }
         });
         window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+
+        canvas.addEventListener('pointerdown', (e) => {
+            if (this.state !== STATE.PLAYING || this.currentQuestion || this.questionLoading) return;
+            this.lookDragging = true;
+            canvas.focus();
+            this.tryPointerLock();
+            e.preventDefault();
+        });
+        window.addEventListener('pointerup', () => { this.lookDragging = false; });
+        window.addEventListener('mousemove', (e) => {
+            if (this.state !== STATE.PLAYING || this.currentQuestion) return;
+            if (document.pointerLockElement === canvas || this.lookDragging) {
+                this.rotateCamera(e.movementX, e.movementY);
+            }
+        });
     }
 
-    startRun() {
+    startRun(settings = {}) {
+        this.settings = settings;
+        this.questionBank.configure(settings);
         this.state = STATE.PLAYING;
-        this.playerBridge = 0;
-        this.playerTile = 0;
-        this.player.position.copy(this.bridges[0].tiles[0]);
+        this.currentLevel = 1;
+        this.elapsed = 0;
+        this.movesMade = 0;
+        this.questionsAnswered = 0;
+        this.questionsCorrect = 0;
+        this.correctAnswerStreak = 0;
+        this.revealedFalseDoors.clear();
+        this.groupHintDoors.clear();
+        this.closedBridges.clear();
+        this.bankedMoves.clear();
+        this.preparedMove = null;
+        this.currentQuestion = null;
+        this.questionLoading = false;
+        this.questionRequestToken = null;
+        this.fireWaveUntil = 0;
+        this.globalHeatUntil = 0;
+        this.peekUntil = 0;
+        this.peekHeatUntil = 0;
+        this.altarAnswers = [];
+        if (this.bonusAltar) {
+            this.bonusAltar.used = false;
+            this.bonusAltar.group.visible = true;
+        }
+        for (const statue of this.statues) {
+            statue.heatOffset = 0;
+        }
+
+        this.randomizeCorrectDoors();
+        this.resetPlayerForLevel();
         this.ui.hideIntro();
+        this.ui.hideOverlay();
+        this.ui.hideQuestion();
+        this.ui.hidePeek();
         this.ui.update(this);
+        this.ui.showMessage(`Режим 1: ${LEVELS[1].name}. Подготовьте ход вопросом, затем поймайте окно огня.`, 4200);
     }
 
     restart() {
-        this.randomizeCorrectDoors();
-        this.startRun();
-        this.ui.hideOverlay();
+        this.startRun(this.settings);
     }
 
-    tryStepForward() {
-        if (this.playerTile >= cfg.tiles - 1) return;
-        this.beginMove(this.playerBridge, this.playerTile + 1);
+    resetPlayerForLevel() {
+        this.playerBridge = 0;
+        this.playerTile = 0;
+        this.moveAnim = null;
+        this.player.position.copy(this.bridges[0].tiles[0]);
+        this.cameraYaw = this.bridges[0].angle + Math.PI;
+        this.cameraPitch = 0;
+        this.startGraceUntil = this.elapsed + START_GRACE;
+        this.preparedMove = null;
+        this.bankedMoves.clear();
+        this.releasePointerLock();
     }
-    tryStepBack() {
-        if (this.playerTile <= 0) return;
-        this.beginMove(this.playerBridge, this.playerTile - 1);
+
+    isGameplayKey(code) {
+        return code === 'ArrowUp' || code === 'ArrowDown' || code === 'ArrowLeft' || code === 'ArrowRight' ||
+            code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD' ||
+            code === 'KeyE' || code === 'Space' || code === 'Enter' || code === 'KeyR' || code === 'KeyF';
     }
-    tryRotateBridge(dir) {
-        if (this.playerTile !== 0) return;
-        const next = (this.playerBridge + dir + cfg.bridges) % cfg.bridges;
-        this.beginMove(next, 0);
+
+    tryPointerLock() {
+        const canvas = this.renderer.domElement;
+        if (document.pointerLockElement === canvas || !canvas.requestPointerLock) return;
+        try {
+            const request = canvas.requestPointerLock();
+            if (request && request.catch) request.catch(() => {});
+        } catch (e) {
+            // Drag-look still works when pointer lock is denied by the browser.
+        }
     }
+
+    releasePointerLock() {
+        if (document.pointerLockElement === this.renderer.domElement && document.exitPointerLock) {
+            document.exitPointerLock();
+        }
+    }
+
+    rotateCamera(deltaX, deltaY) {
+        this.cameraYaw += deltaX * LOOK_SENSITIVITY;
+        this.cameraPitch = THREE.MathUtils.clamp(
+            this.cameraPitch - deltaY * LOOK_SENSITIVITY,
+            -MAX_CAMERA_PITCH,
+            MAX_CAMERA_PITCH
+        );
+    }
+
+    updateCameraBasis() {
+        this._cameraForward.set(Math.cos(this.cameraYaw), 0, Math.sin(this.cameraYaw));
+        this._cameraRight.crossVectors(this._cameraForward, WORLD_UP).normalize();
+    }
+
+    tryMoveRelative(forwardScale, sideScale) {
+        this.updateCameraBasis();
+        this._moveDesired.set(0, 0, 0)
+            .addScaledVector(this._cameraForward, forwardScale)
+            .addScaledVector(this._cameraRight, sideScale);
+
+        if (this._moveDesired.lengthSq() < 1e-6) return;
+        this._moveDesired.normalize();
+        this.tryMoveToward(this._moveDesired);
+    }
+
+    tryMoveToward(direction) {
+        let bestBridge = this.playerBridge;
+        let bestTile = this.playerTile;
+        let bestDot = MOVE_DOT_THRESHOLD;
+        const currentBridge = this.bridges[this.playerBridge];
+        const lastTile = currentBridge.tiles.length - 1;
+
+        const consider = (bridgeIndex, tileIndex) => {
+            const bridge = this.bridges[bridgeIndex];
+            if (!bridge || tileIndex < 0 || tileIndex >= bridge.tiles.length) return;
+            const currentPos = currentBridge.tiles[this.playerTile];
+            const nextPos = bridge.tiles[tileIndex];
+            this._moveCandidate.subVectors(nextPos, currentPos).setY(0);
+            if (this._moveCandidate.lengthSq() < 1e-6) return;
+            this._moveCandidate.normalize();
+
+            const dot = this._moveCandidate.dot(direction);
+            if (dot > bestDot) {
+                bestDot = dot;
+                bestBridge = bridgeIndex;
+                bestTile = tileIndex;
+            }
+        };
+
+        if (this.playerTile < lastTile) consider(this.playerBridge, this.playerTile + 1);
+        if (this.playerTile > 0) consider(this.playerBridge, this.playerTile - 1);
+        if (this.playerTile === 0) {
+            consider((this.playerBridge - 1 + cfg.bridges) % cfg.bridges, 0);
+            consider((this.playerBridge + 1) % cfg.bridges, 0);
+        }
+
+        if (bestBridge !== this.playerBridge || bestTile !== this.playerTile) {
+            this.requestMove(bestBridge, bestTile);
+        }
+    }
+
+    requestMove(toBridge, toTile) {
+        if (this.questionLoading) return;
+        if (this.isBridgeClosed(toBridge) && (toTile > 0 || toBridge !== this.playerBridge)) {
+            this.ui.showMessage('Этот мост временно запечатан после ошибки у двери.', 1800);
+            return;
+        }
+
+        const key = moveKey(toBridge, toTile);
+        const mode = this.getLevelProfile();
+
+        if (this.preparedMove && this.preparedMove.key === key) {
+            this.preparedMove = null;
+            this.beginMove(toBridge, toTile);
+            return;
+        }
+
+        if (mode.bank) {
+            const banked = this.bankedMoves.get(key);
+            if (banked) {
+                this.revealBankedMove(key, banked);
+                return;
+            }
+            this.openQuestion({ context: 'move', targetBridge: toBridge, targetTile: toTile, hiddenResult: true });
+            return;
+        }
+
+        if (this.preparedMove && this.preparedMove.key !== key) {
+            this.preparedMove = null;
+        }
+        this.openQuestion({ context: 'move', targetBridge: toBridge, targetTile: toTile, hiddenResult: false });
+    }
+
+    async openQuestion(details) {
+        if (this.currentQuestion || this.questionLoading || this.state !== STATE.PLAYING) return;
+        this.releasePointerLock();
+        this.questionLoading = true;
+        const token = {};
+        this.questionRequestToken = token;
+        this.ui.showMessage('Генерирую вопрос...', 1200);
+        const question = await this.questionBank.nextQuestion();
+        if (this.state !== STATE.PLAYING || this.questionRequestToken !== token) {
+            return;
+        }
+        this.questionLoading = false;
+        this.questionRequestToken = null;
+        this.answerMarkerPosition = 0;
+        this.answerMarkerIndex = 0;
+        this.answerSlowHeld = false;
+        this.currentQuestion = {
+            ...details,
+            question,
+            startedAt: this.elapsed,
+            markerIndex: 0
+        };
+        this.ui.showQuestion(this.currentQuestion, this);
+    }
+
+    setAnswerSlow(on) {
+        if (!this.currentQuestion) return;
+        this.answerSlowHeld = on;
+        this.ui.setQuestionSlow(on);
+    }
+
+    confirmAnswer() {
+        if (!this.currentQuestion) return;
+
+        const current = this.currentQuestion;
+        const selected = this.answerMarkerIndex;
+        const correct = selected === current.question.correctIndex;
+        const fast = this.elapsed - current.startedAt <= FAST_ANSWER_SECONDS;
+        this.currentQuestion = null;
+        this.answerSlowHeld = false;
+        this.questionsAnswered += 1;
+        this.ui.hideQuestion();
+
+        if (current.context === 'altar') {
+            this.handleAltarAnswer(correct);
+            return;
+        }
+
+        if (current.hiddenResult) {
+            const key = moveKey(current.targetBridge, current.targetTile);
+            this.bankedMoves.set(key, {
+                targetBridge: current.targetBridge,
+                targetTile: current.targetTile,
+                correct,
+                fast
+            });
+            this.ui.showMessage('Ответ заложен в банк. Результат откроется при шаге.', 2200);
+            this.ui.update(this);
+            return;
+        }
+
+        if (correct) {
+            this.questionsCorrect += 1;
+            this.preparedMove = {
+                key: moveKey(current.targetBridge, current.targetTile),
+                targetBridge: current.targetBridge,
+                targetTile: current.targetTile
+            };
+            this.onCorrectTacticalAnswer(fast);
+            this.ui.showMessage(fast ? 'Быстрый правильный ответ. Ход готов, двери дали знак.' : 'Правильно. Ход готов - выбирайте момент.', 2200);
+        } else {
+            this.onWrongTacticalAnswer('Неверно. Ход не готов, статуя греется быстрее.');
+        }
+
+        this.ui.update(this);
+    }
+
+    revealBankedMove(key, banked) {
+        this.bankedMoves.delete(key);
+        if (banked.correct) {
+            this.questionsCorrect += 1;
+            this.onCorrectTacticalAnswer(banked.fast);
+            this.ui.showMessage('Банк сработал: ход был правильным.', 1600);
+            this.beginMove(banked.targetBridge, banked.targetTile);
+            return;
+        }
+
+        this.onWrongTacticalAnswer('Банк вскрылся ошибкой. Ход потерян, время ушло.');
+        this.ui.update(this);
+    }
+
+    onCorrectTacticalAnswer(fast) {
+        this.correctAnswerStreak += 1;
+        if (fast) {
+            this.highlightDoorGroup();
+        }
+        if (this.correctAnswerStreak >= 2) {
+            this.revealFalseDoors(1, 'Серия из двух правильных ответов раскрыла ложную дверь.');
+            this.correctAnswerStreak = 0;
+        }
+    }
+
+    onWrongTacticalAnswer(message) {
+        this.correctAnswerStreak = 0;
+        this.heatCurrentStatue(0.5);
+        this.ui.showMessage(message, 2200);
+    }
+
+    tryActivateBonusAltar() {
+        if (!this.isAtBonusAltar()) return false;
+        if (this.bonusAltar.used) {
+            this.ui.showMessage('Алтарь уже потух в этом забеге.', 1400);
+            return true;
+        }
+        this.bonusAltar.used = true;
+        this.bonusAltar.gemMat.opacity = 0.28;
+        this.bonusAltar.light.intensity = 0.25;
+        this.altarAnswers = [];
+        this.openQuestion({ context: 'altar', altarIndex: 1, hiddenResult: true });
+        this.ui.showMessage('Алтарь требует два ответа. Итог откроет ложные двери.', 1800);
+        return true;
+    }
+
+    handleAltarAnswer(correct) {
+        this.altarAnswers.push(correct);
+        if (this.altarAnswers.length < 2) {
+            this.openQuestion({ context: 'altar', altarIndex: this.altarAnswers.length + 1, hiddenResult: true });
+            return;
+        }
+
+        const correctCount = this.altarAnswers.filter(Boolean).length;
+        this.questionsCorrect += correctCount;
+        if (correctCount > 0) {
+            this.revealFalseDoors(correctCount, correctCount === 2 ?
+                'Алтарь раскрыл две ложные двери.' :
+                'Алтарь раскрыл одну ложную дверь.');
+        } else {
+            this.heatCurrentStatue(0.8);
+            this.ui.showMessage('Алтарь промолчал. Ошибка дала жар ближайшей голове.', 2200);
+        }
+        this.ui.update(this);
+    }
+
+    isAtBonusAltar() {
+        return Boolean(
+            this.bonusAltar &&
+            this.state === STATE.PLAYING &&
+            this.playerTile === 0 &&
+            this.playerBridge === this.bonusAltar.bridgeIndex
+        );
+    }
+
     tryEnterDoor() {
-        if (this.playerTile !== cfg.tiles - 1) return;
+        if (this.playerTile !== cfg.tiles - 1) return false;
+
         const correct = this.correctDoors.has(this.playerBridge);
-        this.state = correct ? STATE.WON : STATE.WRONG_DOOR;
-        this.ui.showOutcome(this.state);
+        const finalTrial = this.getLevelProfile().finalDoorTrial;
+
+        if (finalTrial) {
+            this.playDoorTone(correct);
+            this.finishRun(correct ? STATE.WON : STATE.WRONG_DOOR);
+            return true;
+        }
+
+        if (correct) {
+            this.advanceLevel();
+            return true;
+        }
+
+        this.applyWrongDoorPenalty();
+        return true;
+    }
+
+    advanceLevel() {
+        if (this.currentLevel >= 5) {
+            this.finishRun(STATE.WON);
+            return;
+        }
+
+        this.currentLevel += 1;
+        this.elapsed = 0;
+        this.groupHintDoors.clear();
+        this.groupHintUntil = 0;
+        this.preparedMove = null;
+        this.bankedMoves.clear();
+        this.currentQuestion = null;
+        this.answerSlowHeld = false;
+        this.startGraceUntil = START_GRACE;
+
+        if (this.currentLevel === 5) {
+            this.ensureFinalDoorIntel();
+        }
+
+        this.resetPlayerForLevel();
+        this.refreshDoorVisuals();
+        const profile = this.getLevelProfile();
+        this.ui.hideQuestion();
+        this.ui.update(this);
+        this.ui.showMessage(`Режим ${this.currentLevel}: ${profile.name}. ${this.getLevelBrief(profile)}`, 4600);
+    }
+
+    getLevelBrief(profile) {
+        if (profile.bank) return 'Ответы можно закладывать в банк, но результат скрыт до шага.';
+        if (profile.finalDoorTrial) return 'Неверная дверь завершит забег. Слушайте и смотрите на слабые символы.';
+        if (profile.falseHeats) return 'Не каждый тлеющий взгляд станет струей огня.';
+        if (profile.gateOffset) return 'Иногда верный ход нужно держать до окна между двумя головами.';
+        return 'Базовый ритм: вопрос, готовый ход, окно огня.';
+    }
+
+    applyWrongDoorPenalty() {
+        const penalties = ['knockback', 'heat', 'close', 'clearBank', 'wave'];
+        const penalty = penalties[Math.floor(Math.random() * penalties.length)];
+        let message = 'Неверная дверь дала штраф.';
+
+        if (penalty === 'knockback') {
+            const tile = Math.max(0, this.playerTile - 2);
+            this.playerTile = tile;
+            this.player.position.copy(this.bridges[this.playerBridge].tiles[tile]);
+            message = 'Неверная дверь отбросила вас назад.';
+        } else if (penalty === 'heat') {
+            this.globalHeatUntil = this.elapsed + 7;
+            for (const statue of this.bridges[this.playerBridge].fireStatues) {
+                statue.heatOffset += 0.55;
+            }
+            message = 'Неверная дверь ускорила нагрев статуй.';
+        } else if (penalty === 'close') {
+            const candidates = this.bridges
+                .map((bridge) => bridge.index)
+                .filter((index) => index !== this.playerBridge && !this.correctDoors.has(index));
+            const bridgeIndex = candidates.length ? candidates[Math.floor(Math.random() * candidates.length)] : (this.playerBridge + 1) % cfg.bridges;
+            this.closedBridges.set(bridgeIndex, this.movesMade + 4);
+            message = `Мост ${bridgeIndex + 1} закрыт на несколько ходов.`;
+        } else if (penalty === 'clearBank') {
+            this.bankedMoves.clear();
+            this.preparedMove = null;
+            message = 'Неверная дверь сбросила банк ходов.';
+        } else if (penalty === 'wave') {
+            this.fireWaveUntil = this.elapsed + 2.2;
+            message = 'Неверная дверь пустила волну огня по головам.';
+        }
+
+        this.correctAnswerStreak = 0;
+        this.ui.showMessage(message, 2600);
+        this.ui.update(this);
+        this.refreshDoorVisuals();
+    }
+
+    highlightDoorGroup() {
+        const correct = shuffle(Array.from(this.correctDoors))[0];
+        const falseDoors = shuffle(this.doors
+            .map((door) => door.bridgeIndex)
+            .filter((index) => !this.correctDoors.has(index)));
+        const group = shuffle([correct, ...falseDoors.slice(0, 2)]);
+        this.groupHintDoors = new Set(group);
+        this.groupHintUntil = this.elapsed + 8.5;
+        this.refreshDoorVisuals();
+    }
+
+    revealFalseDoors(count, message) {
+        const candidates = shuffle(this.doors
+            .map((door) => door.bridgeIndex)
+            .filter((index) => !this.correctDoors.has(index) && !this.revealedFalseDoors.has(index)));
+
+        for (let i = 0; i < count && i < candidates.length; i++) {
+            this.revealedFalseDoors.add(candidates[i]);
+        }
+
+        if (message) this.ui.showMessage(message, 2400);
+        this.refreshDoorVisuals();
+    }
+
+    ensureFinalDoorIntel() {
+        const missing = Math.max(0, 4 - this.revealedFalseDoors.size);
+        if (missing > 0) {
+            this.revealFalseDoors(missing, 'Перед Судом дверей храм выжег лишние ложные следы.');
+        }
+    }
+
+    finishRun(state) {
+        this.state = state;
+        this.lookDragging = false;
+        this.currentQuestion = null;
+        this.questionLoading = false;
+        this.questionRequestToken = null;
+        this.releasePointerLock();
+        this.ui.hideQuestion();
+        this.ui.showOutcome(this.state, this);
     }
 
     beginMove(toBridge, toTile) {
@@ -365,6 +1053,10 @@ export class Game {
         const dt = Math.min(this.clock.getDelta(), 0.05);
         this.elapsed += dt;
 
+        this.updateQuestion(dt);
+        this.updateTimedIntel();
+        this.applyHeldHeat(dt);
+
         if (this.moveAnim) {
             this.moveAnim.t += dt;
             const k = Math.min(1, this.moveAnim.t / this.moveAnim.duration);
@@ -375,6 +1067,7 @@ export class Game {
                 this.playerBridge = this.moveAnim.toBridge;
                 this.playerTile = this.moveAnim.toTile;
                 this.moveAnim = null;
+                this.movesMade += 1;
                 this.ui.update(this);
             }
         }
@@ -388,13 +1081,48 @@ export class Game {
             this.playerHalo.material.opacity = 0.5 + Math.sin(this.elapsed * 4) * 0.2;
             this.playerHalo.rotation.z += dt * 1.5;
         }
-        for (const door of this.doors) {
-            door.ringMat.emissiveIntensity = 0.5 + Math.sin(this.elapsed * 2 + door.bridgeIndex) * 0.2;
+
+        this.updateDoorVisuals();
+        this.updateAltarVisual(dt);
+    }
+
+    updateQuestion(dt) {
+        if (!this.currentQuestion) return;
+        const optionCount = this.currentQuestion.question.options.length;
+        const speed = ANSWER_MARKER_SPEED * (this.answerSlowHeld ? ANSWER_MARKER_SLOW : 1);
+        this.answerMarkerPosition = (this.answerMarkerPosition + dt * speed) % optionCount;
+        this.answerMarkerIndex = Math.floor(this.answerMarkerPosition);
+        this.currentQuestion.markerIndex = this.answerMarkerIndex;
+        this.ui.updateQuestionMarker(this.answerMarkerIndex, this.answerMarkerPosition % 1, this.answerSlowHeld);
+    }
+
+    updateTimedIntel() {
+        if (this.groupHintUntil && this.elapsed > this.groupHintUntil) {
+            this.groupHintUntil = 0;
+            this.groupHintDoors.clear();
+            this.refreshDoorVisuals();
+            this.ui.update(this);
         }
+
+        if (this.peekUntil && this.elapsed > this.peekUntil) {
+            this.peekUntil = 0;
+            this.ui.hidePeek();
+        } else if (this.peekUntil) {
+            this.ui.showPeek(this.getNearestTimerRows());
+        }
+    }
+
+    applyHeldHeat(dt) {
+        if (!this.answerSlowHeld && !(this.peekHeatUntil && this.elapsed < this.peekHeatUntil)) return;
+        this.heatCurrentStatue(dt * 0.2);
     }
 
     updateStatues(dt) {
         const playerPos = this.player.position;
+        const profile = this.getLevelProfile();
+        const fireWave = this.fireWaveUntil > this.elapsed;
+        const globalHeat = this.globalHeatUntil > this.elapsed ? 1.22 : 1.0;
+
         for (const s of this.statues) {
             const distSq = s.position.distanceToSquared(playerPos);
             const inActiveRange = distSq < 144;
@@ -402,22 +1130,66 @@ export class Game {
             if (!inActiveRange) {
                 if (s.flame.isFiring()) s.flame.setFiring(false);
                 s.eyeLight.intensity = 0;
+                s.coalMat.opacity = 0.04;
+                s.isFireActive = false;
+                s.visualState = 'cold';
                 continue;
             }
 
-            const phase = (this.elapsed + s.firePhase) % FIRE_PERIOD;
-            const isFire = phase >= FIRE_WARNING && phase < FIRE_WARNING + FIRE_DURATION;
-            const isWarning = phase < FIRE_WARNING;
+            let period = profile.period;
+            let warning = profile.warning;
+            let duration = profile.duration;
+            let heatSpeed = profile.heatSpeed * globalHeat;
+
+            if (profile.fastAlternate && s.fireTile % 2 === 0) {
+                period *= 0.62;
+                warning *= 0.72;
+                duration *= 0.66;
+                heatSpeed *= 1.08;
+            }
+
+            let phaseSeed = s.phaseRatio * period;
+            if (profile.gateOffset) {
+                const fireCount = Math.max(1, this.bridges[s.bridgeIndex].fireStatues.length);
+                phaseSeed = ((fireCount - s.fireTile) / fireCount) * period;
+            }
+
+            const phase = (this.elapsed * heatSpeed + phaseSeed + s.heatOffset) % period;
+            const isFire = fireWave || (phase >= warning && phase < warning + duration);
+            const isWarning = !fireWave && phase < warning;
+            const falsePhase = (this.elapsed + s.falsePhase) % 7.4;
+            const isFalseHeat = profile.falseHeats && !isFire && !isWarning && falsePhase < 1.25;
 
             if (isFire !== s.flame.isFiring()) s.flame.setFiring(isFire);
 
             if (isFire) {
-                s.eyeLight.intensity = 6 + Math.random() * 2;
+                s.eyeLight.color.setHex(fireWave ? 0xff3300 : 0xff5522);
+                s.eyeLight.intensity = 6 + Math.sin(this.elapsed * 32 + s.fireTile) * 1.2;
+                s.coalMat.color.setHex(0xff3a12);
+                s.coalMat.opacity = 0.85;
+                s.coal.scale.setScalar(1.35);
+                s.visualState = 'fire';
             } else if (isWarning) {
-                const k = phase / FIRE_WARNING;
-                s.eyeLight.intensity = k * 2.5;
+                const k = phase / warning;
+                s.eyeLight.color.setHex(0xff7a22);
+                s.eyeLight.intensity = 0.5 + k * 3.6 + Math.sin(this.elapsed * 18) * 0.22;
+                s.coalMat.color.setHex(k > 0.68 ? 0xff4d1a : 0xffa03a);
+                s.coalMat.opacity = 0.18 + k * 0.56;
+                s.coal.scale.setScalar(0.75 + k * 0.45);
+                s.visualState = 'warming';
+            } else if (isFalseHeat) {
+                const k = 1 - falsePhase / 1.25;
+                s.eyeLight.color.setHex(0xffaa55);
+                s.eyeLight.intensity = 0.8 + k * 0.75;
+                s.coalMat.color.setHex(0xc77a2b);
+                s.coalMat.opacity = 0.28 + k * 0.12;
+                s.coal.scale.setScalar(0.72);
+                s.visualState = 'false_heat';
             } else {
                 s.eyeLight.intensity *= Math.exp(-dt * 5);
+                s.coalMat.opacity = Math.max(0.04, s.coalMat.opacity * Math.exp(-dt * 3.8));
+                s.coal.scale.setScalar(0.62);
+                s.visualState = 'cold';
             }
 
             s.isFireActive = isFire;
@@ -426,26 +1198,224 @@ export class Game {
 
     checkBurn() {
         if (this.state !== STATE.PLAYING || this.moveAnim) return;
+        if (this.elapsed < this.startGraceUntil) return;
         const bridge = this.bridges[this.playerBridge];
-        const outer = bridge.outerStatue;
-        const inner = bridge.innerStatue;
-        const onOuterDanger = (this.playerTile === outer.fireTile);
-        const onInnerDanger = (this.playerTile === inner.fireTile);
-
-        if ((onOuterDanger && outer.isFireActive) || (onInnerDanger && inner.isFireActive)) {
-            this.state = STATE.BURNED;
-            this.ui.showOutcome(STATE.BURNED);
+        for (const statue of bridge.fireStatues) {
+            if (this.playerTile === statue.fireTile && statue.isFireActive) {
+                this.finishRun(STATE.BURNED);
+                return;
+            }
         }
     }
 
     updateCamera(dt) {
-        const target = this.player.position.clone();
-        const radial = new THREE.Vector3().subVectors(target, this.center).setY(0);
-        const radialN = radial.lengthSq() > 1e-4 ? radial.clone().normalize() : new THREE.Vector3(1, 0, 0);
-        const camOffset = radialN.clone().multiplyScalar(5).add(new THREE.Vector3(0, 4.5, 0));
-        const desiredPos = target.clone().add(camOffset);
-        this.camera.position.lerp(desiredPos, 1 - Math.exp(-dt * 5));
-        this.camera.lookAt(target.x, target.y + 0.8, target.z);
+        this._cameraPos.copy(this.player.position);
+        this._cameraPos.y += CAMERA_EYE_HEIGHT;
+        this.camera.position.copy(this._cameraPos);
+
+        const pitchCos = Math.cos(this.cameraPitch);
+        this._cameraTarget.set(
+            this._cameraPos.x + Math.cos(this.cameraYaw) * pitchCos,
+            this._cameraPos.y + Math.sin(this.cameraPitch),
+            this._cameraPos.z + Math.sin(this.cameraYaw) * pitchCos
+        );
+        this.camera.lookAt(this._cameraTarget);
+    }
+
+    updateDoorVisuals() {
+        for (const door of this.doors) {
+            const bridgeIndex = door.bridgeIndex;
+            const isFalseKnown = this.revealedFalseDoors.has(bridgeIndex);
+            const isGroupHint = this.groupHintDoors.has(bridgeIndex);
+            const isClosed = this.isBridgeClosed(bridgeIndex);
+            const isFinal = this.currentLevel === 5;
+            const isCorrect = this.correctDoors.has(bridgeIndex);
+
+            if (isClosed) {
+                door.ringMat.color.setHex(0x343044);
+                door.ringMat.emissive.setHex(0x070414);
+                door.ringMat.emissiveIntensity = 0.26;
+                door.slabMat.emissive.setHex(0x070414);
+                door.slabMat.emissiveIntensity = 0.18;
+            } else if (isFalseKnown) {
+                door.ringMat.color.setHex(0x4b6571);
+                door.ringMat.emissive.setHex(0x10222b);
+                door.ringMat.emissiveIntensity = 0.42;
+                door.slabMat.emissive.setHex(0x07141a);
+                door.slabMat.emissiveIntensity = 0.18;
+            } else if (isGroupHint) {
+                door.ringMat.color.setHex(0xffd37a);
+                door.ringMat.emissive.setHex(0xff6a18);
+                door.ringMat.emissiveIntensity = 1.2 + Math.sin(this.elapsed * 8) * 0.35;
+                door.slabMat.emissive.setHex(0x3a1306);
+                door.slabMat.emissiveIntensity = 0.5;
+            } else {
+                door.ringMat.color.setHex(0xffaa44);
+                door.ringMat.emissive.setHex(0x441100);
+                door.ringMat.emissiveIntensity = 0.45 + Math.sin(this.elapsed * 2 + bridgeIndex) * 0.16;
+                door.slabMat.emissive.setHex(0x110200);
+                door.slabMat.emissiveIntensity = 0.28;
+            }
+
+            door.symbolMat.opacity = isFinal ? (isCorrect ? 0.48 + Math.sin(this.elapsed * 3 + bridgeIndex) * 0.08 : 0.13) : 0;
+            door.symbolMat.color.setHex(isCorrect ? 0xffd88a : 0x745048);
+        }
+    }
+
+    refreshDoorVisuals() {
+        this.updateDoorVisuals();
+        this.ui.update(this);
+    }
+
+    updateAltarVisual(dt) {
+        if (!this.bonusAltar) return;
+        if (this.bonusAltar.used) {
+            this.bonusAltar.gem.rotation.y += dt * 0.35;
+            return;
+        }
+        this.bonusAltar.gem.rotation.y += dt * 1.2;
+        this.bonusAltar.gem.position.y = 0.58 + Math.sin(this.elapsed * 2.5) * 0.04;
+        this.bonusAltar.light.intensity = 1.0 + Math.sin(this.elapsed * 3.2) * 0.22;
+    }
+
+    peekTimers() {
+        this.peekUntil = this.elapsed + TIMER_PEEK_SECONDS;
+        this.peekHeatUntil = this.elapsed + TIMER_PEEK_SECONDS;
+        this.ui.showPeek(this.getNearestTimerRows());
+        this.ui.showMessage('Вглядывание показывает таймеры, но подталкивает жар текущей головы.', 1900);
+    }
+
+    getNearestTimerRows() {
+        const bridge = this.bridges[this.playerBridge];
+        const rows = this._timerRows;
+        let count = 0;
+        for (let i = 0; i < bridge.fireStatues.length && count < rows.length; i++) {
+            const statue = bridge.fireStatues[i];
+            if (Math.abs(statue.fireTile - this.playerTile) > 2) continue;
+            this.fillTimerRow(rows[count], statue);
+            count += 1;
+        }
+        if (count === 0 && bridge.fireStatues.length) {
+            this.fillTimerRow(rows[count], bridge.fireStatues[0]);
+            count += 1;
+        }
+        return rows.slice(0, count);
+    }
+
+    fillTimerRow(row, statue) {
+        const profile = this.getLevelProfile();
+        let period = profile.period;
+        let warning = profile.warning;
+        let duration = profile.duration;
+        let heatSpeed = profile.heatSpeed * (this.globalHeatUntil > this.elapsed ? 1.22 : 1.0);
+        if (profile.fastAlternate && statue.fireTile % 2 === 0) {
+            period *= 0.62;
+            warning *= 0.72;
+            duration *= 0.66;
+            heatSpeed *= 1.08;
+        }
+        let phaseSeed = statue.phaseRatio * period;
+        if (profile.gateOffset) {
+            const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].fireStatues.length);
+            phaseSeed = ((fireCount - statue.fireTile) / fireCount) * period;
+        }
+
+        if (this.fireWaveUntil > this.elapsed) {
+            row.label = `Голова ${statue.fireTile + 1}`;
+            row.state = 'волна огня';
+            row.seconds = Math.max(0, this.fireWaveUntil - this.elapsed);
+            return;
+        }
+
+        const phase = (this.elapsed * heatSpeed + phaseSeed + statue.heatOffset) % period;
+        row.label = `Голова ${statue.fireTile + 1}`;
+        if (phase < warning) {
+            row.state = 'до огня';
+            row.seconds = Math.max(0, warning - phase);
+        } else if (phase < warning + duration) {
+            row.state = 'струя';
+            row.seconds = Math.max(0, warning + duration - phase);
+        } else {
+            row.state = 'холод';
+            row.seconds = Math.max(0, period - phase);
+        }
+    }
+
+    heatCurrentStatue(amount) {
+        const bridge = this.bridges[this.playerBridge];
+        if (!bridge) return;
+        let target = null;
+        for (const statue of bridge.fireStatues) {
+            if (statue.fireTile === this.playerTile) {
+                target = statue;
+                break;
+            }
+        }
+        if (!target && bridge.fireStatues.length) {
+            target = bridge.fireStatues[Math.min(bridge.fireStatues.length - 1, this.playerTile)];
+        }
+        if (target) target.heatOffset += amount;
+    }
+
+    isBridgeClosed(bridgeIndex) {
+        const until = this.closedBridges.get(bridgeIndex) || 0;
+        if (until <= this.movesMade) {
+            this.closedBridges.delete(bridgeIndex);
+            return false;
+        }
+        return true;
+    }
+
+    getLevelProfile() {
+        return LEVELS[this.currentLevel] || LEVELS[1];
+    }
+
+    getHudData() {
+        const profile = this.getLevelProfile();
+        return {
+            level: this.currentLevel,
+            modeName: profile.name,
+            modeShort: profile.short,
+            bridge: this.playerBridge + 1,
+            bridges: this.bridges.length,
+            tile: this.playerTile,
+            tiles: this.bridges[0].tiles.length,
+            preparedMove: this.preparedMove,
+            bankedCount: this.bankedMoves.size,
+            revealedFalse: this.revealedFalseDoors.size,
+            correctDoors: this.correctDoors.size,
+            groupHintCount: this.groupHintDoors.size,
+            altarReady: this.isAtBonusAltar() && !this.bonusAltar.used,
+            finalTrial: profile.finalDoorTrial,
+            questionsAnswered: this.questionsAnswered,
+            questionsCorrect: this.questionsCorrect,
+            closed: Array.from(this.closedBridges.entries())
+                .filter((entry) => entry[1] > this.movesMade)
+                .map((entry) => entry[0] + 1)
+        };
+    }
+
+    playDoorTone(correct) {
+        try {
+            if (!this.audioContext) {
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContext) return;
+                this.audioContext = new AudioContext();
+            }
+            const ctx = this.audioContext;
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = correct ? 'sine' : 'triangle';
+            osc.frequency.value = correct ? 520 : 360;
+            gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.02);
+            gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.32);
+            osc.connect(gain).connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.34);
+        } catch (error) {
+            // Audio is optional; browser autoplay policy can block it.
+        }
     }
 
     render() {
