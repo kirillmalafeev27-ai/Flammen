@@ -325,14 +325,18 @@ export class Game {
     placeStatuesAndDoors() {
         for (const b of this.bridges) {
             const doorTile = b.tiles.length - 1;
+            const firstFireTile = 1;
+            const fireTileCount = Math.max(1, doorTile - firstFireTile);
             b.fireStatues = [];
-            for (let t = 0; t < doorTile; t++) {
-                const side = (t % 2 === 0) ? -1 : +1;
+            for (let t = firstFireTile; t < doorTile; t++) {
+                const fireIndex = t - firstFireTile;
+                const side = (fireIndex % 2 === 0) ? -1 : +1;
                 const statue = this.makeStatue(b.tiles[t], b, side);
                 statue.fireTile = t;
-                statue.phaseRatio = this.getFirePhase(b.index, t, doorTile) / BASE_FIRE_PERIOD;
+                statue.fireIndex = fireIndex;
+                statue.phaseRatio = this.getFirePhase(b.index, fireIndex, fireTileCount) / BASE_FIRE_PERIOD;
                 statue.bridgeIndex = b.index;
-                statue.falsePhase = (b.index * 1.37 + t * 2.11) % 7.4;
+                statue.falsePhase = (b.index * 1.37 + fireIndex * 2.11) % 7.4;
                 this.statues.push(statue);
                 b.fireStatues.push(statue);
             }
@@ -341,14 +345,6 @@ export class Game {
             const door = this.makeDoor(doorPos, b);
             this.doors.push(door);
             b.door = door;
-        }
-
-        for (let i = 0; i < cfg.bridges; i++) {
-            const angle = cfg.bridgePhase + ((i + 0.5) / cfg.bridges) * Math.PI * 2;
-            const dir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
-            const pos = this.center.clone().add(dir.clone().multiplyScalar(cfg.rOuter * 0.98));
-            const decor = this.makeStatueMesh(pos, dir.clone().multiplyScalar(-1));
-            this.scene.add(decor);
         }
 
         this.placeBonusAltar();
@@ -1141,7 +1137,7 @@ export class Game {
             let duration = profile.duration;
             let heatSpeed = profile.heatSpeed * globalHeat;
 
-            if (profile.fastAlternate && s.fireTile % 2 === 0) {
+            if (profile.fastAlternate && s.fireIndex % 2 === 0) {
                 period *= 0.62;
                 warning *= 0.72;
                 duration *= 0.66;
@@ -1151,7 +1147,7 @@ export class Game {
             let phaseSeed = s.phaseRatio * period;
             if (profile.gateOffset) {
                 const fireCount = Math.max(1, this.bridges[s.bridgeIndex].fireStatues.length);
-                phaseSeed = ((fireCount - s.fireTile) / fireCount) * period;
+                phaseSeed = ((fireCount - 1 - s.fireIndex) / fireCount) * period;
             }
 
             const phase = (this.elapsed * heatSpeed + phaseSeed + s.heatOffset) % period;
@@ -1164,7 +1160,7 @@ export class Game {
 
             if (isFire) {
                 s.eyeLight.color.setHex(fireWave ? 0xff3300 : 0xff5522);
-                s.eyeLight.intensity = 6 + Math.sin(this.elapsed * 32 + s.fireTile) * 1.2;
+                s.eyeLight.intensity = 6 + Math.sin(this.elapsed * 32 + s.fireIndex) * 1.2;
                 s.coalMat.color.setHex(0xff3a12);
                 s.coalMat.opacity = 0.85;
                 s.coal.scale.setScalar(1.35);
@@ -1308,7 +1304,7 @@ export class Game {
         let warning = profile.warning;
         let duration = profile.duration;
         let heatSpeed = profile.heatSpeed * (this.globalHeatUntil > this.elapsed ? 1.22 : 1.0);
-        if (profile.fastAlternate && statue.fireTile % 2 === 0) {
+        if (profile.fastAlternate && statue.fireIndex % 2 === 0) {
             period *= 0.62;
             warning *= 0.72;
             duration *= 0.66;
@@ -1317,18 +1313,18 @@ export class Game {
         let phaseSeed = statue.phaseRatio * period;
         if (profile.gateOffset) {
             const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].fireStatues.length);
-            phaseSeed = ((fireCount - statue.fireTile) / fireCount) * period;
+            phaseSeed = ((fireCount - 1 - statue.fireIndex) / fireCount) * period;
         }
 
         if (this.fireWaveUntil > this.elapsed) {
-            row.label = `Голова ${statue.fireTile + 1}`;
+            row.label = `Голова ${statue.fireIndex + 1}`;
             row.state = 'волна огня';
             row.seconds = Math.max(0, this.fireWaveUntil - this.elapsed);
             return;
         }
 
         const phase = (this.elapsed * heatSpeed + phaseSeed + statue.heatOffset) % period;
-        row.label = `Голова ${statue.fireTile + 1}`;
+        row.label = `Голова ${statue.fireIndex + 1}`;
         if (phase < warning) {
             row.state = 'до огня';
             row.seconds = Math.max(0, warning - phase);
@@ -1350,9 +1346,6 @@ export class Game {
                 target = statue;
                 break;
             }
-        }
-        if (!target && bridge.fireStatues.length) {
-            target = bridge.fireStatues[Math.min(bridge.fireStatues.length - 1, this.playerTile)];
         }
         if (target) target.heatOffset += amount;
     }

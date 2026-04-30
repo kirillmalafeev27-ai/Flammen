@@ -1,6 +1,14 @@
 import * as THREE from 'three';
 import { Game } from './game.js';
-import { LANGUAGE_LEVELS, LEXICAL_TOPICS } from './questions.js';
+import { LANGUAGE_LEVELS, LEXICAL_TOPICS, GRAMMAR_TOPICS } from './questions.js';
+
+const RITUAL_SLOTS = [
+    { id: 'wortstellung', title: 'Порядок', role: 'Wortstellung', isWortstellung: true },
+    { id: 'step', title: 'Ход', role: 'Грамматика', isWortstellung: false },
+    { id: 'memory', title: 'Память', role: 'Банк', isWortstellung: false },
+    { id: 'door', title: 'Двери', role: 'Расследование', isWortstellung: false },
+    { id: 'altar', title: 'Алтарь', role: 'Риск', isWortstellung: false }
+];
 
 const rootElement = document.querySelector('#root');
 
@@ -57,18 +65,32 @@ const ui = {
     startButton: document.querySelector('#start-btn'),
     startStatus: document.querySelector('#start-status'),
     playerName: document.querySelector('#player-name'),
-    languageLevel: document.querySelector('#language-level'),
-    lexicalTopic: document.querySelector('#lexical-topic'),
+    steps: Array.from(document.querySelectorAll('.setup-step')),
+    progressSteps: Array.from(document.querySelectorAll('.progress-step')),
+    levelButtons: document.querySelector('#level-buttons'),
+    lexicalGrid: document.querySelector('#lexical-grid'),
+    ritualSlots: document.querySelector('#ritual-slots'),
+    grammarPicker: document.querySelector('#grammar-picker'),
     peekButton: document.querySelector('#peek-btn'),
     messageTimer: 0,
     ready: false,
     optionNodes: [],
+    selectedStep: 1,
+    selectedLevel: null,
+    selectedLexical: null,
+    selectedGrammar: null,
+    selectedSlotIndex: null,
+    slotAssignments: Array(RITUAL_SLOTS.length).fill(null),
 
     bind(targetGame) {
         game = targetGame;
         this.populateMenu();
         this.startButton.addEventListener('click', () => this.requestStart());
         this.peekButton.addEventListener('click', () => game.peekTimers());
+        document.querySelector('#to-step2-btn').addEventListener('click', () => this.showStep(2));
+        document.querySelector('#back-to-step1').addEventListener('click', () => this.showStep(1));
+        document.querySelector('#back-to-step2').addEventListener('click', () => this.showStep(2));
+        document.querySelector('#back-to-step3').addEventListener('click', () => this.showStep(3));
 
         this.questionPanel.addEventListener('pointerdown', (event) => {
             if (event.button !== 0 || !game.currentQuestion) return;
@@ -93,31 +115,71 @@ const ui = {
         } catch (error) {
             // Local storage is optional.
         }
+
+        this.playerName.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                this.showStep(2);
+            }
+        });
     },
 
     populateMenu() {
-        this.languageLevel.innerHTML = '';
-        for (const level of LANGUAGE_LEVELS) {
-            const option = document.createElement('option');
-            option.value = level;
-            option.textContent = level;
-            if (level === 'A2') option.selected = true;
-            this.languageLevel.appendChild(option);
-        }
+        this.renderLevelButtons();
+        this.renderLexicalGrid();
+        this.renderSlots();
+        this.renderGrammarPicker();
+        this.showStep(1);
+        this.updateStartButton();
+    },
 
-        this.lexicalTopic.innerHTML = '';
+    renderLevelButtons() {
+        this.levelButtons.innerHTML = '';
+        const labels = {
+            A1: 'Начальный',
+            A2: 'Базовый',
+            B1: 'Средний',
+            B2: 'Выше среднего'
+        };
+        for (const level of LANGUAGE_LEVELS) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'level-btn';
+            button.dataset.level = level;
+            button.innerHTML = `<span class="level-code">${level}</span><span class="level-desc">${labels[level] || ''}</span>`;
+            button.addEventListener('click', () => {
+                this.selectedLevel = level;
+                this.renderLevelButtons();
+                this.updateStartButton();
+                this.showStep(3);
+            });
+            button.classList.toggle('selected', this.selectedLevel === level);
+            this.levelButtons.appendChild(button);
+        }
+    },
+
+    renderLexicalGrid() {
+        this.lexicalGrid.innerHTML = '';
         for (const topic of LEXICAL_TOPICS) {
-            const option = document.createElement('option');
-            option.value = topic;
-            option.textContent = topic;
-            this.lexicalTopic.appendChild(option);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'lexical-btn';
+            button.textContent = topic;
+            button.classList.toggle('selected', this.selectedLexical === topic);
+            button.addEventListener('click', () => {
+                this.selectedLexical = topic;
+                this.renderLexicalGrid();
+                this.updateStartButton();
+                this.showStep(4);
+            });
+            this.lexicalGrid.appendChild(button);
         }
     },
 
     setReady(isReady) {
         this.ready = isReady;
-        this.startButton.disabled = !isReady;
-        this.startStatus.textContent = isReady ? 'Enter или кнопка - начать забег' : 'Загрузка храма...';
+        this.startStatus.textContent = isReady ? 'Храм готов к забегу.' : 'Загрузка храма...';
+        this.updateStartButton();
     },
 
     getSettings() {
@@ -125,14 +187,103 @@ const ui = {
         try { localStorage.setItem('flammen_player_name', playerName); } catch (error) {}
         return {
             playerName,
-            langLevel: this.languageLevel.value || 'A2',
-            lexicalTopic: this.lexicalTopic.value || LEXICAL_TOPICS[0]
+            langLevel: this.selectedLevel || 'A2',
+            lexicalTopic: this.selectedLexical || LEXICAL_TOPICS[0],
+            grammarSlots: this.slotAssignments.map((grammarTopic, index) => ({
+                grammarTopic,
+                isWortstellung: RITUAL_SLOTS[index].isWortstellung
+            }))
         };
     },
 
     requestStart() {
-        if (!this.ready) return;
+        if (!this.ready || !this.isMenuComplete()) {
+            this.startStatus.textContent = this.ready ? 'Заполните все печати перед стартом.' : 'Загрузка храма...';
+            return;
+        }
         game.startRun(this.getSettings());
+    },
+
+    showStep(step) {
+        this.selectedStep = step;
+        this.steps.forEach((node) => {
+            node.classList.toggle('hidden', node.id !== `setup-step${step}`);
+        });
+        this.progressSteps.forEach((node) => {
+            node.classList.toggle('active', node.dataset.progressStep === String(step));
+        });
+    },
+
+    renderSlots() {
+        this.ritualSlots.innerHTML = '';
+        RITUAL_SLOTS.forEach((slot, index) => {
+            const grammar = this.slotAssignments[index];
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'ritual-slot';
+            button.dataset.slot = String(index);
+            button.classList.toggle('selected-slot', this.selectedSlotIndex === index);
+            button.innerHTML =
+                `<div class="slot-bonus">${slot.role}</div>` +
+                `<div class="slot-topic">${grammar || slot.title}</div>` +
+                `<div class="slot-grammar">${grammar ? (slot.isWortstellung ? 'Wortstellung + тема' : 'активная тема') : 'выберите грамматику'}</div>`;
+            button.addEventListener('click', () => {
+                if (this.selectedGrammar) {
+                    this.assignGrammarToSlot(index, this.selectedGrammar);
+                    return;
+                }
+                this.selectedSlotIndex = this.selectedSlotIndex === index ? null : index;
+                this.renderSlots();
+                this.renderGrammarPicker();
+            });
+            this.ritualSlots.appendChild(button);
+        });
+    },
+
+    renderGrammarPicker() {
+        this.grammarPicker.innerHTML = '';
+        const used = this.slotAssignments.filter(Boolean);
+        for (const topic of GRAMMAR_TOPICS) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'grammar-tag';
+            button.textContent = topic;
+            button.classList.toggle('used', used.includes(topic));
+            button.classList.toggle('selected-grammar', this.selectedGrammar === topic);
+            button.addEventListener('click', () => {
+                if (used.includes(topic)) return;
+                if (this.selectedSlotIndex !== null) {
+                    this.assignGrammarToSlot(this.selectedSlotIndex, topic);
+                    return;
+                }
+                this.selectedGrammar = this.selectedGrammar === topic ? null : topic;
+                this.renderSlots();
+                this.renderGrammarPicker();
+            });
+            this.grammarPicker.appendChild(button);
+        }
+    },
+
+    assignGrammarToSlot(slotIndex, grammarTopic) {
+        for (let index = 0; index < this.slotAssignments.length; index++) {
+            if (this.slotAssignments[index] === grammarTopic) {
+                this.slotAssignments[index] = null;
+            }
+        }
+        this.slotAssignments[slotIndex] = grammarTopic;
+        this.selectedGrammar = null;
+        this.selectedSlotIndex = null;
+        this.renderSlots();
+        this.renderGrammarPicker();
+        this.updateStartButton();
+    },
+
+    isMenuComplete() {
+        return Boolean(this.selectedLevel && this.selectedLexical && this.slotAssignments.every(Boolean));
+    },
+
+    updateStartButton() {
+        this.startButton.disabled = !this.ready || !this.isMenuComplete();
     },
 
     showIntro() {

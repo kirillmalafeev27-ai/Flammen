@@ -282,6 +282,7 @@ export class QuestionBank {
         this.lexicalTopic = LEXICAL_TOPICS[0];
         this.fallbackCursor = 0;
         this.grammarCursor = 0;
+        this.selectedSlots = [];
         this.fallbackPool = shuffle(QUESTION_POOL);
         this.questionPool = Object.create(null);
         this.fetching = Object.create(null);
@@ -293,6 +294,12 @@ export class QuestionBank {
         this.lexicalTopic = settings.lexicalTopic || this.lexicalTopic;
         this.fallbackCursor = 0;
         this.grammarCursor = 0;
+        this.selectedSlots = (settings.grammarSlots || [])
+            .filter((slot) => slot && slot.grammarTopic)
+            .map((slot) => ({
+                grammarTopic: slot.grammarTopic,
+                isWortstellung: Boolean(slot.isWortstellung)
+            }));
         this.fallbackPool = shuffle(QUESTION_POOL);
         this.questionPool = Object.create(null);
         this.fetching = Object.create(null);
@@ -301,76 +308,79 @@ export class QuestionBank {
     }
 
     prefetchAll() {
-        const topics = this._topicCycle().slice(0, 5);
-        for (const topic of topics) {
-            this._ensurePool(topic);
+        const slots = this._slotCycle().slice(0, 5);
+        for (const slot of slots) {
+            this._ensurePool(slot);
         }
     }
 
     async nextQuestion() {
-        const grammarTopic = this._nextGrammarTopic();
+        const slot = this._nextGrammarSlot();
         try {
-            const question = await this._getGeneratedQuestion(grammarTopic);
+            const question = await this._getGeneratedQuestion(slot);
             if (question) return question;
         } catch (error) {
             console.warn('AI question generation fallback:', error);
         }
 
-        return this._fallbackQuestion(grammarTopic);
+        return this._fallbackQuestion(slot);
     }
 
-    async _getGeneratedQuestion(grammarTopic) {
-        const pool = await this._ensurePool(grammarTopic);
+    async _getGeneratedQuestion(slot) {
+        const key = this._slotKey(slot);
+        const pool = await this._ensurePool(slot);
         if (!pool || pool.length === 0) return null;
 
         const raw = pool.shift();
         if (pool.length <= 2) {
-            this._ensurePool(grammarTopic);
+            this._ensurePool(slot);
         }
 
-        const formatted = this._formatQuestion(raw, grammarTopic);
-        const used = this.usedDisplays[grammarTopic] || new Set();
+        const formatted = this._formatQuestion(raw, slot);
+        const used = this.usedDisplays[key] || new Set();
         used.add(raw.display);
-        this.usedDisplays[grammarTopic] = used;
+        this.usedDisplays[key] = used;
         return formatted;
     }
 
-    async _ensurePool(grammarTopic) {
-        if (this.fetching[grammarTopic]) {
-            return this.fetching[grammarTopic];
+    async _ensurePool(slot) {
+        const key = this._slotKey(slot);
+        if (this.fetching[key]) {
+            return this.fetching[key];
         }
 
-        const pool = this.questionPool[grammarTopic];
+        const pool = this.questionPool[key];
         if (pool && pool.length > 0) {
             return pool;
         }
 
-        this.fetching[grammarTopic] = this._fetchQuestions(grammarTopic)
+        this.fetching[key] = this._fetchQuestions(slot)
             .catch((error) => {
-                console.warn(`Не удалось загрузить вопросы для темы ${grammarTopic}:`, error);
+                console.warn(`Не удалось загрузить вопросы для темы ${slot.grammarTopic}:`, error);
                 return [];
             })
             .then((result) => {
-                delete this.fetching[grammarTopic];
+                delete this.fetching[key];
                 return result;
             }, (error) => {
-                delete this.fetching[grammarTopic];
+                delete this.fetching[key];
                 throw error;
             });
 
-        return this.fetching[grammarTopic];
+        return this.fetching[key];
     }
 
-    async _fetchQuestions(grammarTopic) {
-        const seen = Array.from(this.usedDisplays[grammarTopic] || []).slice(-12);
+    async _fetchQuestions(slot) {
+        const key = this._slotKey(slot);
+        const seen = Array.from(this.usedDisplays[key] || []).slice(-12);
         const response = await fetch('/api/generate-questions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 level: this.level,
                 lexicalTopic: this.lexicalTopic,
-                grammarTopic,
-                isWortstellung: grammarTopic.includes('Wortstellung'),
+                grammarTopic: slot.grammarTopic,
+                isWortstellung: slot.isWortstellung,
                 count: 10,
                 exclude: seen
             })
@@ -384,18 +394,18 @@ export class QuestionBank {
         const valid = (data.questions || []).filter((question) => this._isValidQuestion(question));
         if (!valid.length) return [];
 
-        const pool = [...(this.questionPool[grammarTopic] || []), ...shuffle(valid)];
-        this.questionPool[grammarTopic] = pool;
+        const pool = [...(this.questionPool[key] || []), ...shuffle(valid)];
+        this.questionPool[key] = pool;
         return pool;
     }
 
-    _formatQuestion(rawQuestion, grammarTopic) {
+    _formatQuestion(rawQuestion, slot) {
         const correctAnswer = rawQuestion.options[rawQuestion.correct];
         const options = shuffle(rawQuestion.options);
 
         return {
             level: this.level,
-            topic: grammarTopic,
+            topic: slot.isWortstellung ? `Wortstellung + ${slot.grammarTopic}` : slot.grammarTopic,
             text: rawQuestion.text,
             display: rawQuestion.display,
             lexicalTopic: this.lexicalTopic,
@@ -405,7 +415,7 @@ export class QuestionBank {
         };
     }
 
-    _fallbackQuestion(grammarTopic) {
+    _fallbackQuestion(slot) {
         const maxRank = LEVEL_RANK[this.level] || LEVEL_RANK.A2;
         const candidates = this.fallbackPool.filter((question) => LEVEL_RANK[question.level] <= maxRank);
         const source = candidates.length ? candidates : this.fallbackPool;
@@ -416,7 +426,7 @@ export class QuestionBank {
         const options = shuffle(raw.options);
         return {
             level: raw.level,
-            topic: grammarTopic || raw.topic,
+            topic: slot ? (slot.isWortstellung ? `Wortstellung + ${slot.grammarTopic}` : slot.grammarTopic) : raw.topic,
             text: raw.text,
             display: raw.display,
             lexicalTopic: this.lexicalTopic,
@@ -426,25 +436,45 @@ export class QuestionBank {
         };
     }
 
-    _nextGrammarTopic() {
-        const topics = this._topicCycle();
-        const topic = topics[this.grammarCursor % topics.length];
+    _nextGrammarSlot() {
+        const slots = this._slotCycle();
+        const slot = slots[this.grammarCursor % slots.length];
         this.grammarCursor += 1;
-        return topic;
+        return slot;
     }
 
-    _topicCycle() {
+    _slotCycle() {
+        if (this.selectedSlots.length > 0) {
+            return this.selectedSlots;
+        }
+
         const maxRank = LEVEL_RANK[this.level] || LEVEL_RANK.A2;
         if (maxRank <= LEVEL_RANK.A1) {
-            return ['Präsens', 'Artikel', 'Nominativ', 'Akkusativ', 'Wortstellung im Hauptsatz', 'Negation'];
+            return ['Präsens', 'Artikel', 'Nominativ', 'Akkusativ', 'Wortstellung im Hauptsatz', 'Negation'].map((grammarTopic) => ({
+                grammarTopic,
+                isWortstellung: grammarTopic.includes('Wortstellung')
+            }));
         }
         if (maxRank <= LEVEL_RANK.A2) {
-            return ['Perfekt', 'Dativ', 'Modalverben', 'Wechselpräpositionen', 'Trennbare Verben', 'weil-Sätze', 'Adjektivdeklination'];
+            return ['Perfekt', 'Dativ', 'Modalverben', 'Wechselpräpositionen', 'Trennbare Verben', 'weil-Sätze', 'Adjektivdeklination'].map((grammarTopic) => ({
+                grammarTopic,
+                isWortstellung: grammarTopic.includes('Wortstellung')
+            }));
         }
         if (maxRank <= LEVEL_RANK.B1) {
-            return ['Konjunktiv II', 'Infinitiv mit zu', 'Passiv', 'Relativsätze', 'Präteritum', 'Doppelkonjunktionen'];
+            return ['Konjunktiv II', 'Infinitiv mit zu', 'Passiv', 'Relativsätze', 'Präteritum', 'Doppelkonjunktionen'].map((grammarTopic) => ({
+                grammarTopic,
+                isWortstellung: grammarTopic.includes('Wortstellung')
+            }));
         }
-        return ['Genitiv', 'Plusquamperfekt', 'Indirekte Fragen', 'Passiv', 'Konjunktiv II', 'Wortstellung im Nebensatz'];
+        return ['Genitiv', 'Plusquamperfekt', 'Indirekte Fragen', 'Passiv', 'Konjunktiv II', 'Wortstellung im Nebensatz'].map((grammarTopic) => ({
+            grammarTopic,
+            isWortstellung: grammarTopic.includes('Wortstellung')
+        }));
+    }
+
+    _slotKey(slot) {
+        return `${slot.grammarTopic}:${slot.isWortstellung ? 'w' : 'g'}`;
     }
 
     _isValidQuestion(question) {
