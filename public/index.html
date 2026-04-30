@@ -129,49 +129,108 @@
         }
         #overlay { display: none; }
         .menu-shell {
-            width: min(760px, calc(100vw - 28px)); padding: 28px;
-            border: 1px solid rgba(255, 168, 83, 0.34); border-radius: 8px;
-            background: rgba(8, 9, 12, 0.86); box-shadow: 0 22px 80px rgba(0,0,0,0.48);
+            width: min(920px, calc(100vw - 28px)); padding: 26px;
+            border: 1px solid rgba(255, 132, 48, 0.44); border-radius: 8px;
+            background:
+                linear-gradient(180deg, rgba(22, 13, 9, 0.96), rgba(5, 7, 9, 0.92)),
+                repeating-linear-gradient(90deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 52px);
+            box-shadow: 0 22px 80px rgba(0,0,0,0.58), inset 0 0 0 1px rgba(255, 210, 135, 0.06);
+        }
+        .menu-kicker {
+            color: #99d8c6; font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+            margin-bottom: 6px;
         }
         .title {
             margin: 0 0 6px; font-size: clamp(32px, 6vw, 56px); letter-spacing: 0.2em;
-            color: #ffb35a; text-shadow: 0 0 24px rgba(255, 100, 30, 0.58);
+            color: #ffc06c; text-shadow: 0 0 24px rgba(255, 77, 20, 0.66);
         }
         .subtitle {
-            margin: 0 0 22px; color: #b6a694; line-height: 1.5; max-width: 680px;
+            margin: 0 0 18px; color: #c0ab95; line-height: 1.5; max-width: 760px;
         }
-        .setup-grid {
-            display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
-            margin-bottom: 16px;
+        .setup-progress {
+            display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
+            margin: 16px 0 20px;
+        }
+        .progress-step {
+            padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255, 177, 90, 0.16);
+            color: #8c8178; background: rgba(255,255,255,0.035); font-size: 12px;
+        }
+        .progress-step.active {
+            color: #ffe0a9; border-color: rgba(255, 142, 50, 0.58);
+            background: rgba(84, 24, 10, 0.5);
+            box-shadow: inset 0 0 18px rgba(255, 74, 18, 0.12);
+        }
+        .setup-step { min-height: 318px; animation: menuFade 0.2s ease; }
+        @keyframes menuFade {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         .field { display: flex; flex-direction: column; gap: 5px; }
         .field label { color: #a8c9c0; font-size: 12px; }
-        .field input, .field select {
-            width: 100%; min-height: 40px; padding: 8px 10px; border-radius: 8px;
-            border: 1px solid rgba(255, 178, 92, 0.28); color: #ffe6c2;
-            background: rgba(15, 13, 14, 0.92);
+        .field input {
+            width: 100%; min-height: 48px; padding: 10px 12px; border-radius: 8px;
+            border: 1px solid rgba(255, 178, 92, 0.32); color: #ffe6c2;
+            background: rgba(15, 13, 14, 0.92); font-size: 18px;
         }
-        .field input:focus, .field select:focus {
+        .field input:focus {
             outline: none; border-color: rgba(156, 255, 217, 0.72);
             box-shadow: 0 0 0 3px rgba(156, 255, 217, 0.12);
         }
-        .menu-notes {
-            display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px;
-            margin-bottom: 18px;
+        .step-title { margin: 0 0 8px; color: #ffd189; font-size: 20px; }
+        .step-hint { margin: 0 0 16px; color: #9e9388; line-height: 1.45; }
+        .level-buttons, .lexical-grid {
+            display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+            margin: 14px 0 18px;
         }
-        .note {
-            min-height: 70px; padding: 10px; border-radius: 8px;
-            background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08);
-            color: #c7b8a4; font-size: 12px; line-height: 1.35;
+        .lexical-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .level-btn, .lexical-btn, .grammar-tag, .ritual-slot {
+            border-radius: 8px; border: 1px solid rgba(255, 164, 80, 0.22);
+            background: rgba(18, 14, 13, 0.92); color: #ead6bd; cursor: pointer;
+            transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
         }
-        .note b { color: #ffbd69; }
-        .menu-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-        #start-btn {
+        .level-btn:hover, .lexical-btn:hover, .grammar-tag:hover, .ritual-slot:hover {
+            border-color: rgba(255, 144, 42, 0.72); background: rgba(48, 22, 13, 0.94);
+        }
+        .level-btn.selected, .lexical-btn.selected, .grammar-tag.selected-grammar, .ritual-slot.selected-slot {
+            border-color: rgba(255, 194, 104, 0.9);
+            background: rgba(82, 28, 13, 0.94);
+            box-shadow: 0 0 22px rgba(255, 80, 20, 0.18);
+        }
+        .level-btn { min-height: 92px; padding: 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+        .level-code { color: #ffc06c; font-size: 24px; font-weight: 800; }
+        .level-desc { color: #9e9388; font-size: 12px; }
+        .lexical-btn { min-height: 54px; padding: 11px 12px; text-align: left; }
+        .ritual-slots {
+            display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 9px; margin: 12px 0 16px;
+        }
+        .ritual-slot {
+            min-height: 104px; padding: 11px 9px; text-align: left; position: relative; overflow: hidden;
+        }
+        .ritual-slot::before {
+            content: ""; position: absolute; left: 10px; right: 10px; top: 8px; height: 3px;
+            background: linear-gradient(90deg, rgba(255,70,18,0.1), rgba(255,188,82,0.72), rgba(153,216,198,0.18));
+        }
+        .slot-bonus { margin-top: 10px; color: #ffbd69; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
+        .slot-topic { margin-top: 6px; font-weight: 800; color: #f5e3c8; overflow-wrap: anywhere; }
+        .slot-grammar { margin-top: 4px; color: #9e9388; font-size: 12px; overflow-wrap: anywhere; }
+        .grammar-picker {
+            max-height: 168px; overflow-y: auto; padding: 8px; display: flex; flex-wrap: wrap; gap: 6px;
+            border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); background: rgba(4, 5, 7, 0.48);
+        }
+        .grammar-tag { padding: 7px 10px; font-size: 12px; }
+        .grammar-tag.used { opacity: 0.32; pointer-events: none; }
+        .menu-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+        .btn-primary, .btn-secondary, #start-btn {
             min-height: 44px; padding: 0 26px; border-radius: 8px; border: 1px solid rgba(255, 188, 95, 0.64);
-            background: linear-gradient(180deg, #9a371b, #5e170e); color: #ffe8c6;
             cursor: pointer; font-weight: 800; letter-spacing: 0.06em;
         }
-        #start-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .btn-primary, #start-btn {
+            background: linear-gradient(180deg, #a43d1c, #5d160d); color: #ffe8c6;
+        }
+        .btn-secondary {
+            background: rgba(7, 10, 12, 0.62); color: #c9b7a2; border-color: rgba(255,255,255,0.14);
+        }
+        .btn-primary:disabled, #start-btn:disabled { opacity: 0.45; cursor: not-allowed; }
         #start-status { color: #a8c9c0; font-size: 13px; }
 
         .outcome {
@@ -187,7 +246,8 @@
         @media (max-width: 760px) {
             #hud { font-size: 12px; }
             #question-options { grid-template-columns: 1fr; }
-            .setup-grid, .menu-notes { grid-template-columns: 1fr; }
+            .setup-progress, .level-buttons, .lexical-grid, .ritual-slots { grid-template-columns: 1fr; }
+            .setup-step { min-height: 0; }
             .menu-shell { padding: 18px; }
             #peek-panel { top: auto; right: 14px; bottom: 64px; }
             #fps { display: none; }
@@ -220,37 +280,60 @@
 
     <div id="intro">
         <div class="menu-shell">
+            <div class="menu-kicker">Ritus der Feuerbruecke</div>
             <h1 class="title">FLAMMEN</h1>
             <p class="subtitle">
-                Вопросы, память, риск и чтение ритма огня. Пять режимов ведут к Суду дверей,
-                где из восьми входов только два настоящие.
+                Перед входом храм требует имя, уровень, лексику и пять грамматических печатей.
+                Эти печати станут темами вопросов в забеге.
             </p>
 
-            <div class="setup-grid">
+            <div class="setup-progress">
+                <div class="progress-step active" data-progress-step="1">1. Имя</div>
+                <div class="progress-step" data-progress-step="2">2. Уровень</div>
+                <div class="progress-step" data-progress-step="3">3. Лексика</div>
+                <div class="progress-step" data-progress-step="4">4. Печати</div>
+            </div>
+
+            <div id="setup-step1" class="setup-step">
+                <h2 class="step-title">Назовите себя храму</h2>
+                <p class="step-hint">Имя сохраняется локально и используется только для вашего забега.</p>
                 <div class="field">
                     <label for="player-name">Игрок</label>
                     <input id="player-name" maxlength="20" placeholder="Spieler">
                 </div>
-                <div class="field">
-                    <label for="language-level">Уровень немецкого</label>
-                    <select id="language-level"></select>
-                </div>
-                <div class="field">
-                    <label for="lexical-topic">Лексика</label>
-                    <select id="lexical-topic"></select>
+                <div class="menu-actions">
+                    <button id="to-step2-btn" class="btn-primary" type="button">ДАЛЬШЕ</button>
+                    <span id="start-status">Загрузка храма...</span>
                 </div>
             </div>
 
-            <div class="menu-notes">
-                <div class="note"><b>1</b><br>Бегающие огни и базовый вопрос перед ходом.</div>
-                <div class="note"><b>2</b><br>Шлюз: иногда ход нужно удержать до окна.</div>
-                <div class="note"><b>3</b><br>Тление бывает ложным, но признаки читаются.</div>
-                <div class="note"><b>4-5</b><br>Банк ходов, быстрые головы и финальный риск двери.</div>
+            <div id="setup-step2" class="setup-step hidden">
+                <h2 class="step-title">Выберите уровень немецкого</h2>
+                <p class="step-hint">AI-генерация будет держаться выбранного уровня и не уходить выше него.</p>
+                <div id="level-buttons" class="level-buttons"></div>
+                <div class="menu-actions">
+                    <button id="back-to-step1" class="btn-secondary" type="button">НАЗАД</button>
+                </div>
             </div>
 
-            <div class="menu-actions">
-                <button id="start-btn" type="button" disabled>НАЧАТЬ</button>
-                <span id="start-status">Загрузка храма...</span>
+            <div id="setup-step3" class="setup-step hidden">
+                <h2 class="step-title">Выберите лексику забега</h2>
+                <p class="step-hint">Все упражнения будут стараться держаться выбранной тематической области.</p>
+                <div id="lexical-grid" class="lexical-grid"></div>
+                <div class="menu-actions">
+                    <button id="back-to-step2" class="btn-secondary" type="button">НАЗАД</button>
+                </div>
+            </div>
+
+            <div id="setup-step4" class="setup-step hidden">
+                <h2 class="step-title">Настройте пять огненных печатей</h2>
+                <p class="step-hint">Выберите грамматику, затем нажмите на печать. Первая печать делает упражнение на порядок слов.</p>
+                <div id="ritual-slots" class="ritual-slots"></div>
+                <div id="grammar-picker" class="grammar-picker"></div>
+                <div class="menu-actions">
+                    <button id="start-btn" type="button" disabled>НАЧАТЬ ЗАБЕГ</button>
+                    <button id="back-to-step3" class="btn-secondary" type="button">НАЗАД</button>
+                </div>
             </div>
         </div>
     </div>
