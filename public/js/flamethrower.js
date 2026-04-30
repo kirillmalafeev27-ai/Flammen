@@ -3,9 +3,9 @@ import * as Photons from '../lib/photons.module.js';
 
 let renderSlot = 1;
 
-const EMBER_RATE_BASE = 4.5;
-const BASE_FLAME_RATE_BASE = 7.5;
-const BRIGHT_FLAME_RATE_BASE = 3.5;
+const EMBER_RATE_BASE = 6;
+const BASE_FLAME_RATE_BASE = 10;
+const BRIGHT_FLAME_RATE_BASE = 5;
 const textureLoader = new THREE.TextureLoader();
 const atlasCache = new Map();
 
@@ -34,12 +34,19 @@ export function buildFlamethrower(parent, threeRenderer, opts = {}) {
         brightFlame: BRIGHT_FLAME_RATE_BASE * releaseMultiplier
     };
 
-    let firing = true;
-    setFiring(false);
+    let firing = false;
+    for (const system of Object.values(systems)) {
+        system.particleEmitter.emissionRate = 0;
+        system.onUpdate((activeCount) => {
+            if (!firing && activeCount === 0) {
+                system.setVisibile(false);
+                system.pause();
+                resetEmitter(system);
+            }
+        });
+    }
 
-    function clearSystem(system) {
-        system.activeParticleCount = 0;
-        if (system.particleStates) system.particleStates.setActiveParticleCount(0);
+    function resetEmitter(system) {
         if (system.particleEmitter) {
             system.particleEmitter.age = 0;
             system.particleEmitter.timeActive = 0;
@@ -47,14 +54,17 @@ export function buildFlamethrower(parent, threeRenderer, opts = {}) {
         }
     }
 
-    function setSystemActive(system, active) {
-        system.setVisibile(active);
-        if (active) {
-            clearSystem(system);
-            system.start();
-        } else {
-            clearSystem(system);
+    function startSystem(system) {
+        resetEmitter(system);
+        system.setVisibile(true);
+        system.start();
+    }
+
+    function stopSystemWhenIdle(system) {
+        if (system.activeParticleCount === 0) {
+            system.setVisibile(false);
             system.pause();
+            resetEmitter(system);
         }
     }
 
@@ -65,19 +75,28 @@ export function buildFlamethrower(parent, threeRenderer, opts = {}) {
         systems.embers.particleEmitter.emissionRate = baseRates.embers * m;
         systems.baseFlame.particleEmitter.emissionRate = baseRates.baseFlame * m;
         systems.brightFlame.particleEmitter.emissionRate = baseRates.brightFlame * m;
-        setSystemActive(systems.embers, on);
-        setSystemActive(systems.baseFlame, on);
-        setSystemActive(systems.brightFlame, on);
+        for (const system of Object.values(systems)) {
+            if (on) {
+                startSystem(system);
+            } else {
+                stopSystemWhenIdle(system);
+            }
+        }
     }
 
     function setIntensity(mult) {
         systems.embers.particleEmitter.emissionRate = baseRates.embers * mult;
         systems.baseFlame.particleEmitter.emissionRate = baseRates.baseFlame * mult;
         systems.brightFlame.particleEmitter.emissionRate = baseRates.brightFlame * mult;
-        firing = mult > 0;
-        setSystemActive(systems.embers, firing);
-        setSystemActive(systems.baseFlame, firing);
-        setSystemActive(systems.brightFlame, firing);
+        const active = mult > 0;
+        if (active !== firing) firing = active;
+        for (const system of Object.values(systems)) {
+            if (active) {
+                startSystem(system);
+            } else {
+                stopSystemWhenIdle(system);
+            }
+        }
     }
 
     return { root, systems, setFiring, setIntensity, isFiring: () => firing };
@@ -107,7 +126,7 @@ function setupEmbers(parent, threeRenderer, scale, releaseMultiplier, animSpeed)
     const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.AdditiveBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, threeRenderer);
-    ps.init(Math.ceil(52 * releaseMultiplier));
+    ps.init(150 * releaseMultiplier);
     ps.setEmitter(new Photons.ConstantParticleEmitter(EMBER_RATE_BASE * releaseMultiplier));
 
     const sizeGen = new Photons.RandomGenerator(
@@ -168,7 +187,7 @@ function setupBaseFlame(parent, threeRenderer, scale, releaseMultiplier, animSpe
     const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.NormalBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, threeRenderer);
-    ps.init(Math.ceil(24 * releaseMultiplier));
+    ps.init(50 * releaseMultiplier);
     ps.setEmitter(new Photons.ConstantParticleEmitter(BASE_FLAME_RATE_BASE * releaseMultiplier));
 
     ps.addParticleSequence(0, 18);
@@ -241,7 +260,7 @@ function setupBrightFlame(parent, threeRenderer, scale, releaseMultiplier, animS
     const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.NormalBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, threeRenderer);
-    ps.init(Math.ceil(14 * releaseMultiplier));
+    ps.init(20 * releaseMultiplier);
     ps.setEmitter(new Photons.ConstantParticleEmitter(BRIGHT_FLAME_RATE_BASE * releaseMultiplier));
 
     ps.addParticleSequence(0, 16);

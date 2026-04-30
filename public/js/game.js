@@ -14,7 +14,7 @@ const cfg = {
     bridgeY: parseFloat(params.get('y') || 'NaN'),
     moaiHeight: parseFloat(params.get('moaiH') || '1.6'),
     fireScale: parseFloat(params.get('fireScale') || '0.18'),
-    releaseMul: parseFloat(params.get('release') || '8'),
+    releaseMul: parseFloat(params.get('release') || '20'),
     sideOffset: parseFloat(params.get('side') || '1.0'),
     fireMouthY: parseFloat(params.get('mouthY') || '1.1'),
     debug: params.has('debug')
@@ -35,7 +35,6 @@ const ANSWER_MARKER_SLOW = 0.46;
 const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
 const FLAME_ACTIVE_RADIUS_SQ = 144;
-const STATUE_VISIBLE_RADIUS_SQ = 240;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
 
@@ -424,13 +423,6 @@ export class Game {
         if (!firing && !statue.flame) return;
         const flame = firing ? this.ensureStatueFlame(statue) : statue.flame;
         if (flame && flame.isFiring() !== firing) flame.setFiring(firing);
-    }
-
-    shouldShowStatue(statue, distSq) {
-        if (distSq <= STATUE_VISIBLE_RADIUS_SQ) return true;
-        const direct = Math.abs(statue.bridgeIndex - this.playerBridge);
-        const wrapped = cfg.bridges - direct;
-        return this.playerTile <= 1 && Math.min(direct, wrapped) <= 1;
     }
 
     makeStatueMesh(position, facingDir) {
@@ -1143,7 +1135,6 @@ export class Game {
         for (const s of this.statues) {
             const distSq = s.position.distanceToSquared(playerPos);
             const inActiveRange = distSq < FLAME_ACTIVE_RADIUS_SQ;
-            s.group.visible = this.shouldShowStatue(s, distSq);
 
             if (!inActiveRange) {
                 this.setStatueFlame(s, false);

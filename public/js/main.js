@@ -15,13 +15,8 @@ const rootElement = document.querySelector('#root');
 const renderWidth = () => Math.floor(window.innerWidth);
 const renderHeight = () => Math.floor(window.innerHeight);
 const qualityParam = new URLSearchParams(location.search).get('quality') || 'auto';
-const lowPowerDevice = qualityParam === 'low' || (
-    qualityParam !== 'high' &&
-    ((navigator.deviceMemory && navigator.deviceMemory <= 4) ||
-        (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
-        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent))
-);
-const pixelRatioCap = qualityParam === 'high' ? 1.4 : (lowPowerDevice ? 1.0 : 1.2);
+const lowPowerDevice = qualityParam === 'low';
+const pixelRatioCap = qualityParam === 'low' ? 1.0 : 1.5;
 
 const camera = new THREE.PerspectiveCamera(60, renderWidth() / renderHeight(), 0.1, 500);
 camera.position.set(20, 18, 20);
@@ -32,7 +27,7 @@ scene.fog = new THREE.Fog(0x07050b, 30, 90);
 
 const renderer = new THREE.WebGLRenderer({
     antialias: !lowPowerDevice,
-    powerPreference: lowPowerDevice ? 'default' : 'high-performance'
+    powerPreference: 'high-performance'
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
 renderer.setSize(renderWidth(), renderHeight());
