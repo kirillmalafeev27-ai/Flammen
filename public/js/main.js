@@ -14,6 +14,14 @@ const rootElement = document.querySelector('#root');
 
 const renderWidth = () => Math.floor(window.innerWidth);
 const renderHeight = () => Math.floor(window.innerHeight);
+const qualityParam = new URLSearchParams(location.search).get('quality') || 'auto';
+const lowPowerDevice = qualityParam === 'low' || (
+    qualityParam !== 'high' &&
+    ((navigator.deviceMemory && navigator.deviceMemory <= 4) ||
+        (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4) ||
+        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent))
+);
+const pixelRatioCap = qualityParam === 'high' ? 1.4 : (lowPowerDevice ? 1.0 : 1.2);
 
 const camera = new THREE.PerspectiveCamera(60, renderWidth() / renderHeight(), 0.1, 500);
 camera.position.set(20, 18, 20);
@@ -22,8 +30,11 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x07050b);
 scene.fog = new THREE.Fog(0x07050b, 30, 90);
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+const renderer = new THREE.WebGLRenderer({
+    antialias: !lowPowerDevice,
+    powerPreference: lowPowerDevice ? 'default' : 'high-performance'
+});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
 renderer.setSize(renderWidth(), renderHeight());
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -101,7 +112,6 @@ const ui = {
         this.questionPanel.addEventListener('pointerup', (event) => {
             if (!game.currentQuestion) return;
             game.setAnswerSlow(false);
-            game.confirmAnswer();
             event.preventDefault();
         });
 
@@ -328,7 +338,7 @@ const ui = {
         const tileLabel = data.tile === 0 ? 'периметр' :
             data.tile === data.tiles - 1 ? 'дверь' :
             `клетка ${data.tile}`;
-        const prepared = data.preparedMove ? 'ход готов' : 'ход не готов';
+        const prepared = data.inQuestion ? 'Enter подтверждает ход' : 'выберите направление';
         const bank = data.bankedCount ? `банк: ${data.bankedCount}` : 'банк пуст';
         const altar = data.altarReady ? '<span class="hud-alert">алтарь рядом</span>' : '';
         const final = data.finalTrial ? '<span class="hud-danger">неверная дверь смертельна</span>' : '';
@@ -353,8 +363,8 @@ const ui = {
         this.questionTopic.textContent = `${question.topic} - ${question.level} - ${question.lexicalTopic}`;
         this.questionText.textContent = `${question.text} ${question.display}`;
         this.questionFeedback.textContent = current.hiddenResult
-            ? 'Результат скрыт. Отпустите мышь или нажмите Enter/Space, когда маркер на выбранном варианте.'
-            : 'Отпустите мышь или нажмите Enter/Space, когда маркер на нужном варианте.';
+            ? 'Результат скрыт. Удерживайте мышь для замедления, Enter фиксирует вариант под маркером.'
+            : 'Удерживайте мышь для замедления, Enter делает ход только если маркер на правильном варианте.';
 
         this.questionOptions.innerHTML = '';
         this.optionNodes = question.options.map((option, index) => {
@@ -430,6 +440,7 @@ function tickFps() {
 
 function animate() {
     requestAnimationFrame(animate);
+    if (document.hidden) return;
     gameInstance.update();
     gameInstance.render();
     tickFps();

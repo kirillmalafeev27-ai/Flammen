@@ -3,9 +3,11 @@ import * as Photons from '../lib/photons.module.js';
 
 let renderSlot = 1;
 
-const EMBER_RATE_BASE = 6;
-const BASE_FLAME_RATE_BASE = 10;
-const BRIGHT_FLAME_RATE_BASE = 5;
+const EMBER_RATE_BASE = 4.5;
+const BASE_FLAME_RATE_BASE = 7.5;
+const BRIGHT_FLAME_RATE_BASE = 3.5;
+const textureLoader = new THREE.TextureLoader();
+const atlasCache = new Map();
 
 export function buildFlamethrower(parent, threeRenderer, opts = {}) {
     const scale = opts.scale ?? 0.18;
@@ -35,6 +37,27 @@ export function buildFlamethrower(parent, threeRenderer, opts = {}) {
     let firing = true;
     setFiring(false);
 
+    function clearSystem(system) {
+        system.activeParticleCount = 0;
+        if (system.particleStates) system.particleStates.setActiveParticleCount(0);
+        if (system.particleEmitter) {
+            system.particleEmitter.age = 0;
+            system.particleEmitter.timeActive = 0;
+            system.particleEmitter.emitCount = 0;
+        }
+    }
+
+    function setSystemActive(system, active) {
+        system.setVisibile(active);
+        if (active) {
+            clearSystem(system);
+            system.start();
+        } else {
+            clearSystem(system);
+            system.pause();
+        }
+    }
+
     function setFiring(on) {
         if (on === firing) return;
         firing = on;
@@ -42,6 +65,9 @@ export function buildFlamethrower(parent, threeRenderer, opts = {}) {
         systems.embers.particleEmitter.emissionRate = baseRates.embers * m;
         systems.baseFlame.particleEmitter.emissionRate = baseRates.baseFlame * m;
         systems.brightFlame.particleEmitter.emissionRate = baseRates.brightFlame * m;
+        setSystemActive(systems.embers, on);
+        setSystemActive(systems.baseFlame, on);
+        setSystemActive(systems.brightFlame, on);
     }
 
     function setIntensity(mult) {
@@ -49,9 +75,27 @@ export function buildFlamethrower(parent, threeRenderer, opts = {}) {
         systems.baseFlame.particleEmitter.emissionRate = baseRates.baseFlame * mult;
         systems.brightFlame.particleEmitter.emissionRate = baseRates.brightFlame * mult;
         firing = mult > 0;
+        setSystemActive(systems.embers, firing);
+        setSystemActive(systems.baseFlame, firing);
+        setSystemActive(systems.brightFlame, firing);
     }
 
     return { root, systems, setFiring, setIntensity, isFiring: () => firing };
+}
+
+function getAtlas(path, frames, frameWidth, frameHeight) {
+    const key = `${path}:${frames}:${frameWidth}:${frameHeight}`;
+    if (atlasCache.has(key)) return atlasCache.get(key);
+
+    const tex = textureLoader.load(path);
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+
+    const atlas = new Photons.Atlas(tex, path);
+    atlas.addFrameSet(frames, 0.0, 0.0, frameWidth, frameHeight);
+    atlasCache.set(key, atlas);
+    return atlas;
 }
 
 function setupEmbers(parent, threeRenderer, scale, releaseMultiplier, animSpeed) {
@@ -59,13 +103,11 @@ function setupEmbers(parent, threeRenderer, scale, releaseMultiplier, animSpeed)
     parent.add(root);
 
     const path = 'assets/textures/ember.png';
-    const tex = new THREE.TextureLoader().load(path);
-    const atlas = new Photons.Atlas(tex, path);
-    atlas.addFrameSet(1, 0.0, 0.0, 1.0, 1.0);
+    const atlas = getAtlas(path, 1, 1.0, 1.0);
     const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.AdditiveBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, threeRenderer);
-    ps.init(150 * releaseMultiplier);
+    ps.init(Math.ceil(52 * releaseMultiplier));
     ps.setEmitter(new Photons.ConstantParticleEmitter(EMBER_RATE_BASE * releaseMultiplier));
 
     const sizeGen = new Photons.RandomGenerator(
@@ -112,7 +154,8 @@ function setupEmbers(parent, threeRenderer, scale, releaseMultiplier, animSpeed)
     ps.addParticleStateOperator(new Photons.AccelerationOperator(accelGen));
 
     ps.setSimulateInWorldSpace(true);
-    ps.start();
+    ps.setVisibile(false);
+    ps.pause();
     return ps;
 }
 
@@ -121,13 +164,11 @@ function setupBaseFlame(parent, threeRenderer, scale, releaseMultiplier, animSpe
     parent.add(root);
 
     const path = 'assets/textures/base_flame.png';
-    const tex = new THREE.TextureLoader().load(path);
-    const atlas = new Photons.Atlas(tex, path);
-    atlas.addFrameSet(18, 0.0, 0.0, 128.0 / 1024.0, 128.0 / 512.0);
+    const atlas = getAtlas(path, 18, 128.0 / 1024.0, 128.0 / 512.0);
     const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.NormalBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, threeRenderer);
-    ps.init(50 * releaseMultiplier);
+    ps.init(Math.ceil(24 * releaseMultiplier));
     ps.setEmitter(new Photons.ConstantParticleEmitter(BASE_FLAME_RATE_BASE * releaseMultiplier));
 
     ps.addParticleSequence(0, 18);
@@ -186,7 +227,8 @@ function setupBaseFlame(parent, threeRenderer, scale, releaseMultiplier, animSpe
     ]);
 
     ps.setSimulateInWorldSpace(true);
-    ps.start();
+    ps.setVisibile(false);
+    ps.pause();
     return ps;
 }
 
@@ -195,13 +237,11 @@ function setupBrightFlame(parent, threeRenderer, scale, releaseMultiplier, animS
     parent.add(root);
 
     const path = 'assets/textures/bright_flame.png';
-    const tex = new THREE.TextureLoader().load(path);
-    const atlas = new Photons.Atlas(tex, path);
-    atlas.addFrameSet(16, 0.0, 0.0, 212.0 / 1024.0, 256.0 / 1024.0);
+    const atlas = getAtlas(path, 16, 212.0 / 1024.0, 256.0 / 1024.0);
     const psRenderer = new Photons.AnimatedSpriteRenderer(true, atlas, true, THREE.NormalBlending, true, renderSlot++);
 
     const ps = new Photons.ParticleSystem(root, psRenderer, threeRenderer);
-    ps.init(20 * releaseMultiplier);
+    ps.init(Math.ceil(14 * releaseMultiplier));
     ps.setEmitter(new Photons.ConstantParticleEmitter(BRIGHT_FLAME_RATE_BASE * releaseMultiplier));
 
     ps.addParticleSequence(0, 16);
@@ -262,6 +302,7 @@ function setupBrightFlame(parent, threeRenderer, scale, releaseMultiplier, animS
     ]);
 
     ps.setSimulateInWorldSpace(true);
-    ps.start();
+    ps.setVisibile(false);
+    ps.pause();
     return ps;
 }

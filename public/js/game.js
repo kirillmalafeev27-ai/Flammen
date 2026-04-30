@@ -14,25 +14,28 @@ const cfg = {
     bridgeY: parseFloat(params.get('y') || 'NaN'),
     moaiHeight: parseFloat(params.get('moaiH') || '1.6'),
     fireScale: parseFloat(params.get('fireScale') || '0.18'),
-    releaseMul: parseFloat(params.get('release') || '20'),
+    releaseMul: parseFloat(params.get('release') || '8'),
     sideOffset: parseFloat(params.get('side') || '1.0'),
     fireMouthY: parseFloat(params.get('mouthY') || '1.1'),
     debug: params.has('debug')
 };
 
-const TURN_DURATION = 0.18;
-const BASE_FIRE_PERIOD = 4.8;
-const BASE_FIRE_WARNING = 0.65;
-const BASE_FIRE_DURATION = 1.55;
+const TURN_DURATION = 0.2;
+const BASE_FIRE_PERIOD = 14.0;
+const BASE_FIRE_WARNING = 7.2;
+const BASE_FIRE_DURATION = 1.8;
+const BASE_FIRE_DECAY = 1.0;
 const CAMERA_EYE_HEIGHT = 1.35;
 const LOOK_SENSITIVITY = 0.0022;
 const MAX_CAMERA_PITCH = Math.PI * 0.42;
 const MOVE_DOT_THRESHOLD = 0.35;
-const START_GRACE = 0.8;
-const ANSWER_MARKER_SPEED = 1.08;
+const START_GRACE = 1.0;
+const ANSWER_MARKER_SPEED = 0.86;
 const ANSWER_MARKER_SLOW = 0.46;
-const FAST_ANSWER_SECONDS = 2.9;
+const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
+const FLAME_ACTIVE_RADIUS_SQ = 144;
+const STATUE_VISIBLE_RADIUS_SQ = 240;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
 
@@ -51,6 +54,7 @@ const LEVELS = {
         period: BASE_FIRE_PERIOD,
         warning: BASE_FIRE_WARNING,
         duration: BASE_FIRE_DURATION,
+        decay: BASE_FIRE_DECAY,
         heatSpeed: 1.0,
         bank: false,
         falseHeats: false,
@@ -60,9 +64,10 @@ const LEVELS = {
     2: {
         name: 'Шлюз',
         short: 'ожидание',
-        period: 5.2,
-        warning: 0.95,
-        duration: 1.85,
+        period: 13.0,
+        warning: 6.2,
+        duration: 2.2,
+        decay: BASE_FIRE_DECAY,
         heatSpeed: 1.0,
         gateOffset: true,
         bank: false,
@@ -73,9 +78,10 @@ const LEVELS = {
     3: {
         name: 'Ложные нагревы',
         short: 'чтение',
-        period: 4.9,
-        warning: 0.75,
-        duration: 1.45,
+        period: 12.5,
+        warning: 5.8,
+        duration: 2.0,
+        decay: BASE_FIRE_DECAY,
         heatSpeed: 1.0,
         bank: false,
         falseHeats: true,
@@ -85,10 +91,11 @@ const LEVELS = {
     4: {
         name: 'Банк вопросов',
         short: 'заготовка',
-        period: 4.6,
-        warning: 0.62,
-        duration: 1.35,
-        heatSpeed: 1.03,
+        period: 11.5,
+        warning: 5.1,
+        duration: 1.8,
+        decay: BASE_FIRE_DECAY,
+        heatSpeed: 1.02,
         bank: true,
         falseHeats: false,
         fastAlternate: true,
@@ -97,10 +104,11 @@ const LEVELS = {
     5: {
         name: 'Суд дверей',
         short: 'риск',
-        period: 4.4,
-        warning: 0.7,
-        duration: 1.5,
-        heatSpeed: 1.06,
+        period: 11.0,
+        warning: 4.8,
+        duration: 2.0,
+        decay: BASE_FIRE_DECAY,
+        heatSpeed: 1.04,
         bank: false,
         falseHeats: true,
         fastAlternate: true,
@@ -163,7 +171,6 @@ export class Game {
         this.currentQuestion = null;
         this.questionLoading = false;
         this.questionRequestToken = null;
-        this.preparedMove = null;
         this.bankedMoves = new Map();
         this.answerSlowHeld = false;
         this.answerMarkerPosition = 0;
@@ -373,19 +380,10 @@ export class Game {
         fireOrigin.position.y += cfg.fireMouthY;
         fireOrigin.position.add(facingDir.clone().multiplyScalar(0.3));
         this.scene.add(fireOrigin);
-        const flame = buildFlamethrower(fireOrigin, this.renderer, {
-            scale: cfg.fireScale,
-            releaseMultiplier: cfg.releaseMul,
-            animSpeed: 2.2,
-            direction: facingDir
-        });
-
-        this.manager.addParticleSystem(flame.systems.embers);
-        this.manager.addParticleSystem(flame.systems.baseFlame);
-        this.manager.addParticleSystem(flame.systems.brightFlame);
 
         const eyeLight = new THREE.PointLight(0xff5522, 0, 5, 2.0);
         eyeLight.position.copy(fireOrigin.position);
+        eyeLight.visible = false;
         this.scene.add(eyeLight);
 
         const coalMat = new THREE.MeshBasicMaterial({
@@ -396,13 +394,43 @@ export class Game {
         });
         const coal = new THREE.Mesh(new THREE.SphereGeometry(0.08, 12, 8), coalMat);
         coal.position.copy(fireOrigin.position);
+        coal.visible = false;
         this.scene.add(coal);
 
         return {
-            group, fireOrigin, flame, eyeLight, coal, coalMat,
+            group, fireOrigin, flame: null, eyeLight, coal, coalMat,
             position: statuePos, facing: facingDir, tilePosition: tilePos.clone(),
             heatOffset: 0, isFireActive: false, visualState: 'cold'
         };
+    }
+
+    ensureStatueFlame(statue) {
+        if (statue.flame) return statue.flame;
+        const flame = buildFlamethrower(statue.fireOrigin, this.renderer, {
+            scale: cfg.fireScale,
+            releaseMultiplier: cfg.releaseMul,
+            animSpeed: 2.2,
+            direction: statue.facing
+        });
+
+        this.manager.addParticleSystem(flame.systems.embers);
+        this.manager.addParticleSystem(flame.systems.baseFlame);
+        this.manager.addParticleSystem(flame.systems.brightFlame);
+        statue.flame = flame;
+        return flame;
+    }
+
+    setStatueFlame(statue, firing) {
+        if (!firing && !statue.flame) return;
+        const flame = firing ? this.ensureStatueFlame(statue) : statue.flame;
+        if (flame && flame.isFiring() !== firing) flame.setFiring(firing);
+    }
+
+    shouldShowStatue(statue, distSq) {
+        if (distSq <= STATUE_VISIBLE_RADIUS_SQ) return true;
+        const direct = Math.abs(statue.bridgeIndex - this.playerBridge);
+        const wrapped = cfg.bridges - direct;
+        return this.playerTile <= 1 && Math.min(direct, wrapped) <= 1;
     }
 
     makeStatueMesh(position, facingDir) {
@@ -532,7 +560,7 @@ export class Game {
             if (this.state !== STATE.PLAYING) return;
 
             if (this.currentQuestion) {
-                if (e.code === 'Enter' || e.code === 'Space') {
+                if (e.code === 'Enter') {
                     this.confirmAnswer();
                 }
                 return;
@@ -590,7 +618,6 @@ export class Game {
         this.groupHintDoors.clear();
         this.closedBridges.clear();
         this.bankedMoves.clear();
-        this.preparedMove = null;
         this.currentQuestion = null;
         this.questionLoading = false;
         this.questionRequestToken = null;
@@ -605,6 +632,11 @@ export class Game {
         }
         for (const statue of this.statues) {
             statue.heatOffset = 0;
+            this.setStatueFlame(statue, false);
+            statue.eyeLight.visible = false;
+            statue.eyeLight.intensity = 0;
+            statue.coal.visible = false;
+            statue.coalMat.opacity = 0.04;
         }
 
         this.randomizeCorrectDoors();
@@ -614,7 +646,7 @@ export class Game {
         this.ui.hideQuestion();
         this.ui.hidePeek();
         this.ui.update(this);
-        this.ui.showMessage(`Режим 1: ${LEVELS[1].name}. Подготовьте ход вопросом, затем поймайте окно огня.`, 4200);
+        this.ui.showMessage(`Режим 1: ${LEVELS[1].name}. Выберите направление, затем нажмите Enter на правильном ответе, чтобы сделать ход.`, 4200);
     }
 
     restart() {
@@ -629,7 +661,6 @@ export class Game {
         this.cameraYaw = this.bridges[0].angle + Math.PI;
         this.cameraPitch = 0;
         this.startGraceUntil = this.elapsed + START_GRACE;
-        this.preparedMove = null;
         this.bankedMoves.clear();
         this.releasePointerLock();
     }
@@ -728,12 +759,6 @@ export class Game {
         const key = moveKey(toBridge, toTile);
         const mode = this.getLevelProfile();
 
-        if (this.preparedMove && this.preparedMove.key === key) {
-            this.preparedMove = null;
-            this.beginMove(toBridge, toTile);
-            return;
-        }
-
         if (mode.bank) {
             const banked = this.bankedMoves.get(key);
             if (banked) {
@@ -744,9 +769,6 @@ export class Game {
             return;
         }
 
-        if (this.preparedMove && this.preparedMove.key !== key) {
-            this.preparedMove = null;
-        }
         this.openQuestion({ context: 'move', targetBridge: toBridge, targetTile: toTile, hiddenResult: false });
     }
 
@@ -813,15 +835,11 @@ export class Game {
 
         if (correct) {
             this.questionsCorrect += 1;
-            this.preparedMove = {
-                key: moveKey(current.targetBridge, current.targetTile),
-                targetBridge: current.targetBridge,
-                targetTile: current.targetTile
-            };
             this.onCorrectTacticalAnswer(fast);
-            this.ui.showMessage(fast ? 'Быстрый правильный ответ. Ход готов, двери дали знак.' : 'Правильно. Ход готов - выбирайте момент.', 2200);
+            this.ui.showMessage(fast ? 'Быстрый правильный ответ. Ход сделан, двери дали знак.' : 'Правильно. Ход сделан.', 1600);
+            this.beginMove(current.targetBridge, current.targetTile);
         } else {
-            this.onWrongTacticalAnswer('Неверно. Ход не готов, статуя греется быстрее.');
+            this.onWrongTacticalAnswer('Неверно. Ход не случился, статуя греется быстрее.');
         }
 
         this.ui.update(this);
@@ -933,7 +951,6 @@ export class Game {
         this.elapsed = 0;
         this.groupHintDoors.clear();
         this.groupHintUntil = 0;
-        this.preparedMove = null;
         this.bankedMoves.clear();
         this.currentQuestion = null;
         this.answerSlowHeld = false;
@@ -956,7 +973,7 @@ export class Game {
         if (profile.finalDoorTrial) return 'Неверная дверь завершит забег. Слушайте и смотрите на слабые символы.';
         if (profile.falseHeats) return 'Не каждый тлеющий взгляд станет струей огня.';
         if (profile.gateOffset) return 'Иногда верный ход нужно держать до окна между двумя головами.';
-        return 'Базовый ритм: вопрос, готовый ход, окно огня.';
+        return 'Базовый ритм: направление, вопрос и Enter на правильном варианте.';
     }
 
     applyWrongDoorPenalty() {
@@ -984,7 +1001,6 @@ export class Game {
             message = `Мост ${bridgeIndex + 1} закрыт на несколько ходов.`;
         } else if (penalty === 'clearBank') {
             this.bankedMoves.clear();
-            this.preparedMove = null;
             message = 'Неверная дверь сбросила банк ходов.';
         } else if (penalty === 'wave') {
             this.fireWaveUntil = this.elapsed + 2.2;
@@ -1034,6 +1050,11 @@ export class Game {
         this.currentQuestion = null;
         this.questionLoading = false;
         this.questionRequestToken = null;
+        for (const statue of this.statues) {
+            this.setStatueFlame(statue, false);
+            statue.eyeLight.visible = false;
+            statue.coal.visible = false;
+        }
         this.releasePointerLock();
         this.ui.hideQuestion();
         this.ui.showOutcome(this.state, this);
@@ -1121,11 +1142,14 @@ export class Game {
 
         for (const s of this.statues) {
             const distSq = s.position.distanceToSquared(playerPos);
-            const inActiveRange = distSq < 144;
+            const inActiveRange = distSq < FLAME_ACTIVE_RADIUS_SQ;
+            s.group.visible = this.shouldShowStatue(s, distSq);
 
             if (!inActiveRange) {
-                if (s.flame.isFiring()) s.flame.setFiring(false);
+                this.setStatueFlame(s, false);
+                s.eyeLight.visible = false;
                 s.eyeLight.intensity = 0;
+                s.coal.visible = false;
                 s.coalMat.opacity = 0.04;
                 s.isFireActive = false;
                 s.visualState = 'cold';
@@ -1135,13 +1159,14 @@ export class Game {
             let period = profile.period;
             let warning = profile.warning;
             let duration = profile.duration;
+            const decay = profile.decay ?? BASE_FIRE_DECAY;
             let heatSpeed = profile.heatSpeed * globalHeat;
 
             if (profile.fastAlternate && s.fireIndex % 2 === 0) {
-                period *= 0.62;
-                warning *= 0.72;
-                duration *= 0.66;
-                heatSpeed *= 1.08;
+                period *= 0.82;
+                warning *= 0.82;
+                duration *= 0.82;
+                heatSpeed *= 1.04;
             }
 
             let phaseSeed = s.phaseRatio * period;
@@ -1151,22 +1176,40 @@ export class Game {
             }
 
             const phase = (this.elapsed * heatSpeed + phaseSeed + s.heatOffset) % period;
-            const isFire = fireWave || (phase >= warning && phase < warning + duration);
+            const fireEnd = warning + duration;
+            const decayEnd = fireEnd + decay;
+            const isFire = fireWave || (phase >= warning && phase < fireEnd);
             const isWarning = !fireWave && phase < warning;
+            const isDecay = !fireWave && phase >= fireEnd && phase < decayEnd;
             const falsePhase = (this.elapsed + s.falsePhase) % 7.4;
-            const isFalseHeat = profile.falseHeats && !isFire && !isWarning && falsePhase < 1.25;
+            const isFalseHeat = profile.falseHeats && !isFire && !isWarning && !isDecay && falsePhase < 1.25;
 
-            if (isFire !== s.flame.isFiring()) s.flame.setFiring(isFire);
+            if (!isFire && isWarning && phase > warning * 0.7) this.ensureStatueFlame(s);
+            this.setStatueFlame(s, isFire);
 
             if (isFire) {
+                s.eyeLight.visible = true;
+                s.coal.visible = true;
                 s.eyeLight.color.setHex(fireWave ? 0xff3300 : 0xff5522);
                 s.eyeLight.intensity = 6 + Math.sin(this.elapsed * 32 + s.fireIndex) * 1.2;
                 s.coalMat.color.setHex(0xff3a12);
                 s.coalMat.opacity = 0.85;
                 s.coal.scale.setScalar(1.35);
                 s.visualState = 'fire';
+            } else if (isDecay) {
+                const k = 1 - (phase - fireEnd) / decay;
+                s.eyeLight.visible = true;
+                s.coal.visible = true;
+                s.eyeLight.color.setHex(0xff7a22);
+                s.eyeLight.intensity = 0.35 + k * 2.4;
+                s.coalMat.color.setHex(0xff5a20);
+                s.coalMat.opacity = 0.12 + k * 0.48;
+                s.coal.scale.setScalar(0.68 + k * 0.34);
+                s.visualState = 'decay';
             } else if (isWarning) {
                 const k = phase / warning;
+                s.eyeLight.visible = true;
+                s.coal.visible = true;
                 s.eyeLight.color.setHex(0xff7a22);
                 s.eyeLight.intensity = 0.5 + k * 3.6 + Math.sin(this.elapsed * 18) * 0.22;
                 s.coalMat.color.setHex(k > 0.68 ? 0xff4d1a : 0xffa03a);
@@ -1175,6 +1218,8 @@ export class Game {
                 s.visualState = 'warming';
             } else if (isFalseHeat) {
                 const k = 1 - falsePhase / 1.25;
+                s.eyeLight.visible = true;
+                s.coal.visible = true;
                 s.eyeLight.color.setHex(0xffaa55);
                 s.eyeLight.intensity = 0.8 + k * 0.75;
                 s.coalMat.color.setHex(0xc77a2b);
@@ -1182,8 +1227,10 @@ export class Game {
                 s.coal.scale.setScalar(0.72);
                 s.visualState = 'false_heat';
             } else {
-                s.eyeLight.intensity *= Math.exp(-dt * 5);
-                s.coalMat.opacity = Math.max(0.04, s.coalMat.opacity * Math.exp(-dt * 3.8));
+                s.eyeLight.visible = false;
+                s.eyeLight.intensity = 0;
+                s.coal.visible = false;
+                s.coalMat.opacity = 0.04;
                 s.coal.scale.setScalar(0.62);
                 s.visualState = 'cold';
             }
@@ -1303,12 +1350,13 @@ export class Game {
         let period = profile.period;
         let warning = profile.warning;
         let duration = profile.duration;
+        const decay = profile.decay ?? BASE_FIRE_DECAY;
         let heatSpeed = profile.heatSpeed * (this.globalHeatUntil > this.elapsed ? 1.22 : 1.0);
         if (profile.fastAlternate && statue.fireIndex % 2 === 0) {
-            period *= 0.62;
-            warning *= 0.72;
-            duration *= 0.66;
-            heatSpeed *= 1.08;
+            period *= 0.82;
+            warning *= 0.82;
+            duration *= 0.82;
+            heatSpeed *= 1.04;
         }
         let phaseSeed = statue.phaseRatio * period;
         if (profile.gateOffset) {
@@ -1324,13 +1372,18 @@ export class Game {
         }
 
         const phase = (this.elapsed * heatSpeed + phaseSeed + statue.heatOffset) % period;
+        const fireEnd = warning + duration;
+        const decayEnd = fireEnd + decay;
         row.label = `Голова ${statue.fireIndex + 1}`;
         if (phase < warning) {
             row.state = 'до огня';
             row.seconds = Math.max(0, warning - phase);
-        } else if (phase < warning + duration) {
+        } else if (phase < fireEnd) {
             row.state = 'струя';
-            row.seconds = Math.max(0, warning + duration - phase);
+            row.seconds = Math.max(0, fireEnd - phase);
+        } else if (phase < decayEnd) {
+            row.state = 'затухание';
+            row.seconds = Math.max(0, decayEnd - phase);
         } else {
             row.state = 'холод';
             row.seconds = Math.max(0, period - phase);
@@ -1373,7 +1426,7 @@ export class Game {
             bridges: this.bridges.length,
             tile: this.playerTile,
             tiles: this.bridges[0].tiles.length,
-            preparedMove: this.preparedMove,
+            inQuestion: Boolean(this.currentQuestion),
             bankedCount: this.bankedMoves.size,
             revealedFalse: this.revealedFalseDoors.size,
             correctDoors: this.correctDoors.size,
