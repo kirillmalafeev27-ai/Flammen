@@ -34,9 +34,21 @@ const ANSWER_MARKER_SPEED = 0.86;
 const ANSWER_MARKER_SLOW = 0.46;
 const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
+const PEEK_HEAT_ACCEL = 0.45;
 const FLAME_ACTIVE_RADIUS_SQ = 144;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
+const GATE_BRIDGE_TIMINGS = [
+    { period: 1.00, warning: -0.4, duration: 1.00, phase: 0.0, heatSpeed: 1.00 },
+    { period: 1.06, warning: 0.2, duration: 0.92, phase: 1.4, heatSpeed: 0.98 },
+    { period: 0.94, warning: -0.8, duration: 1.08, phase: 2.7, heatSpeed: 1.04 },
+    { period: 1.10, warning: 0.5, duration: 0.86, phase: 3.6, heatSpeed: 0.96 },
+    { period: 0.98, warning: -0.1, duration: 1.16, phase: 4.5, heatSpeed: 1.02 },
+    { period: 1.13, warning: 0.8, duration: 0.94, phase: 5.1, heatSpeed: 0.95 },
+    { period: 0.90, warning: -0.7, duration: 1.04, phase: 5.9, heatSpeed: 1.06 },
+    { period: 1.04, warning: 0.4, duration: 1.10, phase: 6.8, heatSpeed: 0.99 }
+];
+const GATE_FIRE_TARGETS = [8.4, 2.2, 10.6, 4.4, 12.0, 6.4];
 
 const STATE = {
     INTRO: 'intro',
@@ -55,6 +67,7 @@ const LEVELS = {
         duration: BASE_FIRE_DURATION,
         decay: BASE_FIRE_DECAY,
         heatSpeed: 1.0,
+        runningWave: true,
         bank: false,
         falseHeats: false,
         fastAlternate: false,
@@ -69,6 +82,7 @@ const LEVELS = {
         decay: BASE_FIRE_DECAY,
         heatSpeed: 1.0,
         gateOffset: true,
+        bridgeUniqueTiming: true,
         bank: false,
         falseHeats: false,
         fastAlternate: false,
@@ -82,6 +96,7 @@ const LEVELS = {
         duration: 2.0,
         decay: BASE_FIRE_DECAY,
         heatSpeed: 1.0,
+        falseCycleModulo: 4,
         bank: false,
         falseHeats: true,
         fastAlternate: false,
@@ -96,6 +111,7 @@ const LEVELS = {
         decay: BASE_FIRE_DECAY,
         heatSpeed: 1.02,
         bank: true,
+        bankLimit: 2,
         falseHeats: false,
         fastAlternate: true,
         finalDoorTrial: false
@@ -108,6 +124,7 @@ const LEVELS = {
         duration: 2.0,
         decay: BASE_FIRE_DECAY,
         heatSpeed: 1.04,
+        falseCycleModulo: 5,
         bank: false,
         falseHeats: true,
         fastAlternate: true,
@@ -117,6 +134,10 @@ const LEVELS = {
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+}
+
+function positiveModulo(value, period) {
+    return ((value % period) + period) % period;
 }
 
 function shuffle(items) {
@@ -153,7 +174,6 @@ export class Game {
         this.revealedFalseDoors = new Set();
         this.groupHintDoors = new Set();
         this.groupHintUntil = 0;
-        this.closedBridges = new Map();
 
         this.player = null;
         this.playerBridge = 0;
@@ -178,11 +198,13 @@ export class Game {
         this.correctAnswerStreak = 0;
         this.questionsAnswered = 0;
         this.questionsCorrect = 0;
+        this.wrongDoorAttempts = 0;
 
         this.fireWaveUntil = 0;
         this.globalHeatUntil = 0;
         this.peekUntil = 0;
         this.peekHeatUntil = 0;
+        this.peekHeatStatue = null;
 
         this.bonusAltar = null;
         this.altarAnswers = [];
@@ -200,6 +222,11 @@ export class Game {
             { label: '', state: '', seconds: 0 },
             { label: '', state: '', seconds: 0 }
         ];
+        this._cycle = {
+            period: 0, warning: 0, duration: 0, decay: 0, heatSpeed: 0,
+            phaseSeed: 0, phase: 0, fireEnd: 0, decayEnd: 0,
+            cycleIndex: 0, falseCycle: false
+        };
     }
 
     async build() {
@@ -451,7 +478,9 @@ export class Game {
         const frameMat = new THREE.MeshStandardMaterial({ color: 0x2a1f15, roughness: 0.8, metalness: 0.2 });
         const slabMat = new THREE.MeshStandardMaterial({
             color: 0x1a0d08, roughness: 0.7, metalness: 0.3,
-            emissive: 0x110200, emissiveIntensity: 0.3
+            emissive: 0x110200, emissiveIntensity: 0.3,
+            transparent: true,
+            opacity: 1
         });
         const frame = new THREE.Mesh(new THREE.BoxGeometry(1.6, 2.4, 0.3), frameMat);
         frame.position.set(0, 1.2, 0);
@@ -483,6 +512,7 @@ export class Game {
 
         return {
             group, slab, ring, symbol, position: position.clone(),
+            slabBaseY: slab.position.y,
             bridgeIndex: bridge.index, ringMat, slabMat, symbolMat
         };
     }
@@ -597,20 +627,22 @@ export class Game {
         });
     }
 
-    startRun(settings = {}) {
+    startRun(settings = {}, options = {}) {
+        const startLevel = clamp(options.startLevel || 1, 1, 5);
+        const preserveDoorIntel = Boolean(options.preserveDoorIntel);
         this.settings = settings;
         this.questionBank.configure(settings);
         this.state = STATE.PLAYING;
-        this.currentLevel = 1;
+        this.currentLevel = startLevel;
         this.elapsed = 0;
         this.movesMade = 0;
         this.readyMoves = 0;
         this.questionsAnswered = 0;
         this.questionsCorrect = 0;
         this.correctAnswerStreak = 0;
-        this.revealedFalseDoors.clear();
+        this.wrongDoorAttempts = 0;
+        if (!preserveDoorIntel) this.revealedFalseDoors.clear();
         this.groupHintDoors.clear();
-        this.closedBridges.clear();
         this.bankedMoves.clear();
         this.currentQuestion = null;
         this.questionLoading = false;
@@ -619,6 +651,7 @@ export class Game {
         this.globalHeatUntil = 0;
         this.peekUntil = 0;
         this.peekHeatUntil = 0;
+        this.peekHeatStatue = null;
         this.altarAnswers = [];
         if (this.bonusAltar) {
             this.bonusAltar.used = false;
@@ -633,18 +666,30 @@ export class Game {
             statue.coalMat.opacity = 0.04;
         }
 
-        this.randomizeCorrectDoors();
+        if (!preserveDoorIntel || this.correctDoors.size < 2) {
+            this.randomizeCorrectDoors();
+        } else {
+            this.refreshDoorVisuals();
+        }
+        if (this.currentLevel === 5) {
+            this.ensureFinalDoorIntel();
+        }
         this.resetPlayerForLevel();
         this.ui.hideIntro();
         this.ui.hideOverlay();
         this.ui.hideQuestion();
         this.ui.hidePeek();
         this.ui.update(this);
-        this.ui.showMessage(`Режим 1: ${LEVELS[1].name}. Enter фиксирует ответ. Правильный ответ заряжает ход, направление выбираете отдельно.`, 4200);
+        const profile = this.getLevelProfile();
+        this.ui.showMessage(`Режим ${this.currentLevel}: ${profile.name}. ${this.getLevelBrief(profile)}`, 4200);
     }
 
     restart() {
-        this.startRun(this.settings);
+        const repeatLevel = this.state === STATE.BURNED || this.state === STATE.WRONG_DOOR;
+        this.startRun(this.settings, {
+            startLevel: repeatLevel ? this.currentLevel : 1,
+            preserveDoorIntel: false
+        });
     }
 
     resetPlayerForLevel() {
@@ -746,8 +791,9 @@ export class Game {
 
     requestMove(toBridge, toTile) {
         if (this.questionLoading) return;
-        if (this.isBridgeClosed(toBridge) && (toTile > 0 || toBridge !== this.playerBridge)) {
-            this.ui.showMessage('Этот мост временно запечатан после ошибки у двери.', 1800);
+        if (toTile === cfg.tiles - 1 && this.revealedFalseDoors.has(toBridge)) {
+            this.playDoorTone(false);
+            this.ui.showMessage('Эта дверь уже раскрыта как ложная. Ход туда не нужен.', 1800);
             return;
         }
 
@@ -765,6 +811,10 @@ export class Game {
             const banked = this.bankedMoves.get(key);
             if (banked) {
                 this.revealBankedMove(key, banked);
+                return;
+            }
+            if (this.bankedMoves.size >= this.getBankLimit()) {
+                this.ui.showMessage('Банк полон: сначала вскройте один подготовленный ход.', 1800);
                 return;
             }
             this.openQuestion({ context: 'move', targetBridge: toBridge, targetTile: toTile, hiddenResult: true });
@@ -849,9 +899,11 @@ export class Game {
 
         if (correct) {
             this.questionsCorrect += 1;
-            this.onCorrectTacticalAnswer(fast);
+            const tacticalNotes = this.onCorrectTacticalAnswer(fast);
             this.readyMoves += 1;
-            this.ui.showMessage(fast ? 'Быстрый правильный ответ. Ход готов, двери дали знак. Выберите направление.' : 'Правильно. Ход готов. Выберите направление.', 1800);
+            const baseMessage = fast ? 'Быстрый правильный ответ. Ход готов, двери дали знак.' : 'Правильно. Ход готов.';
+            const note = tacticalNotes.length ? ` ${tacticalNotes.join(' ')}` : '';
+            this.ui.showMessage(`${baseMessage}${note} Выберите направление.`, 2200);
         } else {
             this.onWrongTacticalAnswer('Неверно. Ход не случился, статуя греется быстрее.');
         }
@@ -863,9 +915,11 @@ export class Game {
         this.bankedMoves.delete(key);
         if (banked.correct) {
             this.questionsCorrect += 1;
-            this.onCorrectTacticalAnswer(banked.fast);
-            this.ui.showMessage('Банк сработал: ход был правильным.', 1600);
+            const tacticalNotes = this.onCorrectTacticalAnswer(banked.fast);
+            const note = tacticalNotes.length ? ` ${tacticalNotes.join(' ')}` : '';
+            this.ui.showMessage(`Банк сработал: ход был правильным.${note}`, 1900);
             this.beginMove(banked.targetBridge, banked.targetTile);
+            this.ui.update(this);
             return;
         }
 
@@ -874,14 +928,22 @@ export class Game {
     }
 
     onCorrectTacticalAnswer(fast) {
+        const notes = [];
         this.correctAnswerStreak += 1;
+        if (this.revealFalseDoors(1, null) > 0) {
+            notes.push('Одна ложная дверь раскрылась.');
+        }
         if (fast) {
             this.highlightDoorGroup();
+            notes.push('Группа из трёх дверей дала знак.');
         }
         if (this.correctAnswerStreak >= 2) {
-            this.revealFalseDoors(1, 'Серия из двух правильных ответов раскрыла ложную дверь.');
+            if (this.revealFalseDoors(1, null) > 0) {
+                notes.push('Серия раскрыла ещё одну ложную дверь.');
+            }
             this.correctAnswerStreak = 0;
         }
+        return notes;
     }
 
     onWrongTacticalAnswer(message) {
@@ -940,8 +1002,15 @@ export class Game {
         const correct = this.correctDoors.has(this.playerBridge);
         const finalTrial = this.getLevelProfile().finalDoorTrial;
 
+        if (this.revealedFalseDoors.has(this.playerBridge)) {
+            this.playDoorTone(false);
+            this.ui.showMessage('Эта дверь уже раскрыта как ложная. Ищите другой мост.', 1800);
+            return true;
+        }
+
+        this.playDoorTone(correct);
+
         if (finalTrial) {
-            this.playDoorTone(correct);
             this.finishRun(correct ? STATE.WON : STATE.WRONG_DOOR);
             return true;
         }
@@ -990,41 +1059,60 @@ export class Game {
         return 'Базовый ритм: Enter фиксирует ответ, правильный ответ заряжает свободный ход.';
     }
 
-    applyWrongDoorPenalty() {
-        const penalties = ['knockback', 'heat', 'close', 'clearBank', 'wave'];
-        const penalty = penalties[Math.floor(Math.random() * penalties.length)];
-        let message = 'Неверная дверь дала штраф.';
+    getBankLimit() {
+        const profile = this.getLevelProfile();
+        return profile.bankLimit || (this.currentLevel >= 4 ? 2 : 1);
+    }
 
-        if (penalty === 'knockback') {
-            const tile = Math.max(0, this.playerTile - 2);
-            this.playerTile = tile;
-            this.player.position.copy(this.bridges[this.playerBridge].tiles[tile]);
-            message = 'Неверная дверь отбросила вас назад.';
-        } else if (penalty === 'heat') {
-            this.globalHeatUntil = this.elapsed + 7;
-            for (const statue of this.bridges[this.playerBridge].fireStatues) {
-                statue.heatOffset += 0.55;
+    pickWrongDoorPenalty() {
+        const penalties = ['heat', 'wave'];
+        if (this.getLevelProfile().bank && this.bankedMoves.size > 0) {
+            penalties.push('clearBank');
+        }
+        const penalty = penalties[this.wrongDoorAttempts % penalties.length];
+        this.wrongDoorAttempts += 1;
+        return penalty;
+    }
+
+    applyWrongDoorPenalty() {
+        const wrongBridge = this.playerBridge;
+        const penalty = this.pickWrongDoorPenalty();
+        const notes = ['Дверь оказалась ложной и выведена из подозрения.'];
+
+        this.revealedFalseDoors.add(wrongBridge);
+        this.groupHintDoors.delete(wrongBridge);
+        this.groupHintUntil = this.groupHintDoors.size ? this.groupHintUntil : 0;
+        this.readyMoves = Math.max(this.readyMoves, 1);
+        this.startGraceUntil = this.elapsed + 2.0;
+        notes.push('Один свободный шаг оставлен для отступления.');
+
+        if (penalty === 'heat') {
+            this.globalHeatUntil = this.elapsed + 5.5;
+            for (const bridge of this.bridges) {
+                const ringDistance = Math.min(
+                    Math.abs(bridge.index - wrongBridge),
+                    cfg.bridges - Math.abs(bridge.index - wrongBridge)
+                );
+                if (ringDistance <= 1) {
+                    for (const statue of bridge.fireStatues) {
+                        statue.heatOffset += 0.38;
+                    }
+                }
             }
-            message = 'Неверная дверь ускорила нагрев статуй.';
-        } else if (penalty === 'close') {
-            const candidates = this.bridges
-                .map((bridge) => bridge.index)
-                .filter((index) => index !== this.playerBridge && !this.correctDoors.has(index));
-            const bridgeIndex = candidates.length ? candidates[Math.floor(Math.random() * candidates.length)] : (this.playerBridge + 1) % cfg.bridges;
-            this.closedBridges.set(bridgeIndex, this.movesMade + 4);
-            message = `Мост ${bridgeIndex + 1} закрыт на несколько ходов.`;
+            notes.push('Ближайшие головы слегка ускорили нагрев, но есть короткая защита от сгорания.');
         } else if (penalty === 'clearBank') {
+            const count = this.bankedMoves.size;
             this.bankedMoves.clear();
-            message = 'Неверная дверь сбросила банк ходов.';
+            notes.push(count ? `Банк ходов сгорел: ${count}, но шаг отступления сохранён.` : 'Банк оказался пуст, штраф ушёл в лёгкий жар.');
+            if (!count) this.globalHeatUntil = this.elapsed + 4;
         } else if (penalty === 'wave') {
-            this.fireWaveUntil = this.elapsed + 2.2;
-            message = 'Неверная дверь пустила волну огня по головам.';
+            this.fireWaveUntil = this.elapsed + 2.8;
+            notes.push('По мостам пошла короткая волна огня, но у вас есть окно защиты.');
         }
 
         this.correctAnswerStreak = 0;
-        this.ui.showMessage(message, 2600);
-        this.ui.update(this);
         this.refreshDoorVisuals();
+        this.ui.showMessage(notes.join(' '), 3400);
     }
 
     highlightDoorGroup() {
@@ -1043,12 +1131,15 @@ export class Game {
             .map((door) => door.bridgeIndex)
             .filter((index) => !this.correctDoors.has(index) && !this.revealedFalseDoors.has(index)));
 
+        let revealed = 0;
         for (let i = 0; i < count && i < candidates.length; i++) {
             this.revealedFalseDoors.add(candidates[i]);
+            revealed += 1;
         }
 
         if (message) this.ui.showMessage(message, 2400);
         this.refreshDoorVisuals();
+        return revealed;
     }
 
     ensureFinalDoorIntel() {
@@ -1100,6 +1191,9 @@ export class Game {
                 this.moveAnim = null;
                 this.movesMade += 1;
                 this.ui.update(this);
+                if (this.playerTile === cfg.tiles - 1) {
+                    this.tryEnterDoor();
+                }
             }
         }
 
@@ -1137,15 +1231,105 @@ export class Game {
 
         if (this.peekUntil && this.elapsed > this.peekUntil) {
             this.peekUntil = 0;
+            this.peekHeatUntil = 0;
+            this.peekHeatStatue = null;
             this.ui.hidePeek();
         } else if (this.peekUntil) {
             this.ui.showPeek(this.getNearestTimerRows());
         }
     }
 
+    getCurrentHeatStatue() {
+        const bridge = this.bridges[this.playerBridge];
+        if (!bridge || !bridge.fireStatues || !bridge.fireStatues.length) return null;
+        let target = null;
+        let bestScore = Infinity;
+        for (const statue of bridge.fireStatues) {
+            const delta = statue.fireTile - this.playerTile;
+            const score = delta >= 0 ? delta : Math.abs(delta) + 3;
+            if (score < bestScore) {
+                bestScore = score;
+                target = statue;
+            }
+        }
+        return target;
+    }
+
     applyHeldHeat(dt) {
-        if (!this.answerSlowHeld && !(this.peekHeatUntil && this.elapsed < this.peekHeatUntil)) return;
-        this.heatCurrentStatue(dt * 0.2);
+        let heat = 0;
+        if (this.answerSlowHeld) heat += dt * 0.2;
+        if (this.peekHeatUntil && this.elapsed < this.peekHeatUntil) heat += dt * PEEK_HEAT_ACCEL;
+        if (heat <= 0) return;
+        this.heatCurrentStatue(heat, this.peekHeatStatue);
+    }
+
+    fillStatueCycle(statue, profile, globalHeat, out = this._cycle) {
+        let period = profile.period;
+        let warning = profile.warning;
+        let duration = profile.duration;
+        const decay = profile.decay ?? BASE_FIRE_DECAY;
+        let heatSpeed = profile.heatSpeed * globalHeat;
+        const bridgeTiming = profile.bridgeUniqueTiming ?
+            GATE_BRIDGE_TIMINGS[statue.bridgeIndex % GATE_BRIDGE_TIMINGS.length] :
+            null;
+
+        if (bridgeTiming) {
+            period *= bridgeTiming.period;
+            warning += bridgeTiming.warning;
+            duration *= bridgeTiming.duration;
+            heatSpeed *= bridgeTiming.heatSpeed;
+        }
+
+        if (profile.fastAlternate && statue.fireIndex % 2 === 0) {
+            period *= 0.82;
+            warning *= 0.82;
+            duration *= 0.82;
+            heatSpeed *= 1.04;
+        }
+
+        warning = clamp(warning, 3.2, Math.max(3.2, period - duration - decay - 1.0));
+
+        let phaseSeed = positiveModulo(statue.phaseRatio * period, period);
+        if (profile.runningWave) {
+            phaseSeed = this.getRunningWavePhaseSeed(statue, period, warning);
+        } else if (profile.gateOffset) {
+            phaseSeed = this.getGatePhaseSeed(statue, period, warning);
+        }
+        if (bridgeTiming) phaseSeed = positiveModulo(phaseSeed + bridgeTiming.phase, period);
+
+        const rawPhase = this.elapsed * heatSpeed + phaseSeed + statue.heatOffset;
+        const phase = positiveModulo(rawPhase, period);
+        const cycleIndex = Math.floor(rawPhase / period);
+
+        out.period = period;
+        out.warning = warning;
+        out.duration = duration;
+        out.decay = decay;
+        out.heatSpeed = heatSpeed;
+        out.phaseSeed = phaseSeed;
+        out.phase = phase;
+        out.fireEnd = warning + duration;
+        out.decayEnd = warning + duration + decay;
+        out.cycleIndex = cycleIndex;
+        out.falseCycle = Boolean(
+            profile.falseHeats &&
+            profile.falseCycleModulo &&
+            ((cycleIndex + statue.bridgeIndex * 2 + statue.fireIndex) % profile.falseCycleModulo === 0)
+        );
+        return out;
+    }
+
+    getRunningWavePhaseSeed(statue, period, warning) {
+        const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].fireStatues.length);
+        const step = Math.min(2.15, period / Math.max(2, fireCount + 2));
+        const targetSeconds = (fireCount - 1 - statue.fireIndex) * step;
+        const bridgeDrift = statue.bridgeIndex * 0.18;
+        return positiveModulo(warning - targetSeconds + bridgeDrift, period);
+    }
+
+    getGatePhaseSeed(statue, period, warning) {
+        const target = GATE_FIRE_TARGETS[statue.fireIndex % GATE_FIRE_TARGETS.length] * (period / 13.0);
+        return positiveModulo(warning - target, period);
     }
 
     updateStatues(dt) {
@@ -1169,33 +1353,18 @@ export class Game {
                 continue;
             }
 
-            let period = profile.period;
-            let warning = profile.warning;
-            let duration = profile.duration;
-            const decay = profile.decay ?? BASE_FIRE_DECAY;
-            let heatSpeed = profile.heatSpeed * globalHeat;
-
-            if (profile.fastAlternate && s.fireIndex % 2 === 0) {
-                period *= 0.82;
-                warning *= 0.82;
-                duration *= 0.82;
-                heatSpeed *= 1.04;
-            }
-
-            let phaseSeed = s.phaseRatio * period;
-            if (profile.gateOffset) {
-                const fireCount = Math.max(1, this.bridges[s.bridgeIndex].fireStatues.length);
-                phaseSeed = ((fireCount - 1 - s.fireIndex) / fireCount) * period;
-            }
-
-            const phase = (this.elapsed * heatSpeed + phaseSeed + s.heatOffset) % period;
-            const fireEnd = warning + duration;
-            const decayEnd = fireEnd + decay;
-            const isFire = fireWave || (phase >= warning && phase < fireEnd);
-            const isWarning = !fireWave && phase < warning;
-            const isDecay = !fireWave && phase >= fireEnd && phase < decayEnd;
+            const cycle = this.fillStatueCycle(s, profile, globalHeat);
+            const phase = cycle.phase;
+            const warning = cycle.warning;
+            const fireEnd = cycle.fireEnd;
+            const decayEnd = cycle.decayEnd;
+            const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.72 && phase < decayEnd;
+            const isFire = fireWave || (!falseHeatWindow && phase >= warning && phase < fireEnd);
+            const isWarning = !fireWave && !falseHeatWindow && phase < warning;
+            const isDecay = !fireWave && !cycle.falseCycle && phase >= fireEnd && phase < decayEnd;
             const falsePhase = (this.elapsed + s.falsePhase) % 7.4;
-            const isFalseHeat = profile.falseHeats && !isFire && !isWarning && !isDecay && falsePhase < 1.25;
+            const isFalseHeat = !fireWave && (falseHeatWindow ||
+                (profile.falseHeats && !isFire && !isWarning && !isDecay && falsePhase < 1.25));
 
             if (!isFire && isWarning && phase > warning * 0.7) this.ensureStatueFlame(s);
             this.setStatueFlame(s, isFire);
@@ -1210,7 +1379,7 @@ export class Game {
                 s.coal.scale.setScalar(1.35);
                 s.visualState = 'fire';
             } else if (isDecay) {
-                const k = 1 - (phase - fireEnd) / decay;
+                const k = 1 - (phase - fireEnd) / cycle.decay;
                 s.eyeLight.visible = true;
                 s.coal.visible = true;
                 s.eyeLight.color.setHex(0xff7a22);
@@ -1230,7 +1399,9 @@ export class Game {
                 s.coal.scale.setScalar(0.75 + k * 0.45);
                 s.visualState = 'warming';
             } else if (isFalseHeat) {
-                const k = 1 - falsePhase / 1.25;
+                const k = falseHeatWindow ?
+                    1 - clamp((phase - warning * 0.72) / Math.max(0.01, decayEnd - warning * 0.72), 0, 1) :
+                    1 - falsePhase / 1.25;
                 s.eyeLight.visible = true;
                 s.coal.visible = true;
                 s.eyeLight.color.setHex(0xffaa55);
@@ -1283,23 +1454,26 @@ export class Game {
             const bridgeIndex = door.bridgeIndex;
             const isFalseKnown = this.revealedFalseDoors.has(bridgeIndex);
             const isGroupHint = this.groupHintDoors.has(bridgeIndex);
-            const isClosed = this.isBridgeClosed(bridgeIndex);
             const isFinal = this.currentLevel === 5;
             const isCorrect = this.correctDoors.has(bridgeIndex);
+            const pulse = Math.sin(this.elapsed * 3 + bridgeIndex);
 
-            if (isClosed) {
-                door.ringMat.color.setHex(0x343044);
-                door.ringMat.emissive.setHex(0x070414);
-                door.ringMat.emissiveIntensity = 0.26;
-                door.slabMat.emissive.setHex(0x070414);
-                door.slabMat.emissiveIntensity = 0.18;
-            } else if (isFalseKnown) {
+            door.slab.position.y = door.slabBaseY;
+            door.slabMat.opacity = 1;
+            door.ring.scale.setScalar(1);
+            door.symbol.rotation.z = bridgeIndex * 0.42;
+
+            if (isFalseKnown) {
+                door.slab.position.y = door.slabBaseY - 0.62;
+                door.slabMat.opacity = 0.42;
+                door.ring.scale.setScalar(0.92);
                 door.ringMat.color.setHex(0x4b6571);
                 door.ringMat.emissive.setHex(0x10222b);
                 door.ringMat.emissiveIntensity = 0.42;
                 door.slabMat.emissive.setHex(0x07141a);
                 door.slabMat.emissiveIntensity = 0.18;
             } else if (isGroupHint) {
+                door.ring.scale.setScalar(1.04 + Math.sin(this.elapsed * 8) * 0.015);
                 door.ringMat.color.setHex(0xffd37a);
                 door.ringMat.emissive.setHex(0xff6a18);
                 door.ringMat.emissiveIntensity = 1.2 + Math.sin(this.elapsed * 8) * 0.35;
@@ -1313,8 +1487,12 @@ export class Game {
                 door.slabMat.emissiveIntensity = 0.28;
             }
 
-            door.symbolMat.opacity = isFinal ? (isCorrect ? 0.48 + Math.sin(this.elapsed * 3 + bridgeIndex) * 0.08 : 0.13) : 0;
-            door.symbolMat.color.setHex(isCorrect ? 0xffd88a : 0x745048);
+            let symbolOpacity = isCorrect ? 0.08 + pulse * 0.025 : 0.025;
+            if (isGroupHint) symbolOpacity = 0.36 + Math.sin(this.elapsed * 8 + bridgeIndex) * 0.08;
+            if (isFalseKnown) symbolOpacity = 0.22;
+            if (isFinal) symbolOpacity = isCorrect ? 0.48 + pulse * 0.08 : 0.13;
+            door.symbolMat.opacity = Math.max(0, symbolOpacity);
+            door.symbolMat.color.setHex(isFalseKnown ? 0x5ea0b6 : (isCorrect ? 0xffd88a : 0x745048));
         }
     }
 
@@ -1337,6 +1515,10 @@ export class Game {
     peekTimers() {
         this.peekUntil = this.elapsed + TIMER_PEEK_SECONDS;
         this.peekHeatUntil = this.elapsed + TIMER_PEEK_SECONDS;
+        this.peekHeatStatue = this.getCurrentHeatStatue();
+        if (this.peekHeatStatue) {
+            this.peekHeatStatue.heatOffset += 0.18;
+        }
         this.ui.showPeek(this.getNearestTimerRows());
         this.ui.showMessage('Вглядывание показывает таймеры, но подталкивает жар текущей головы.', 1900);
     }
@@ -1360,22 +1542,11 @@ export class Game {
 
     fillTimerRow(row, statue) {
         const profile = this.getLevelProfile();
-        let period = profile.period;
-        let warning = profile.warning;
-        let duration = profile.duration;
-        const decay = profile.decay ?? BASE_FIRE_DECAY;
-        let heatSpeed = profile.heatSpeed * (this.globalHeatUntil > this.elapsed ? 1.22 : 1.0);
-        if (profile.fastAlternate && statue.fireIndex % 2 === 0) {
-            period *= 0.82;
-            warning *= 0.82;
-            duration *= 0.82;
-            heatSpeed *= 1.04;
-        }
-        let phaseSeed = statue.phaseRatio * period;
-        if (profile.gateOffset) {
-            const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].fireStatues.length);
-            phaseSeed = ((fireCount - 1 - statue.fireIndex) / fireCount) * period;
-        }
+        const cycle = this.fillStatueCycle(
+            statue,
+            profile,
+            this.globalHeatUntil > this.elapsed ? 1.22 : 1.0
+        );
 
         if (this.fireWaveUntil > this.elapsed) {
             row.label = `Голова ${statue.fireIndex + 1}`;
@@ -1384,12 +1555,17 @@ export class Game {
             return;
         }
 
-        const phase = (this.elapsed * heatSpeed + phaseSeed + statue.heatOffset) % period;
-        const fireEnd = warning + duration;
-        const decayEnd = fireEnd + decay;
+        const phase = cycle.phase;
+        const warning = cycle.warning;
+        const fireEnd = cycle.fireEnd;
+        const decayEnd = cycle.decayEnd;
+        const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.72 && phase < decayEnd;
         row.label = `Голова ${statue.fireIndex + 1}`;
-        if (phase < warning) {
-            row.state = 'до огня';
+        if (falseHeatWindow) {
+            row.state = 'ложное тление';
+            row.seconds = Math.max(0, decayEnd - phase);
+        } else if (phase < warning) {
+            row.state = cycle.falseCycle && phase > warning * 0.72 ? 'ложный нагрев' : 'до огня';
             row.seconds = Math.max(0, warning - phase);
         } else if (phase < fireEnd) {
             row.state = 'струя';
@@ -1399,30 +1575,13 @@ export class Game {
             row.seconds = Math.max(0, decayEnd - phase);
         } else {
             row.state = 'холод';
-            row.seconds = Math.max(0, period - phase);
+            row.seconds = Math.max(0, cycle.period - phase);
         }
     }
 
-    heatCurrentStatue(amount) {
-        const bridge = this.bridges[this.playerBridge];
-        if (!bridge) return;
-        let target = null;
-        for (const statue of bridge.fireStatues) {
-            if (statue.fireTile === this.playerTile) {
-                target = statue;
-                break;
-            }
-        }
+    heatCurrentStatue(amount, preferredTarget = null) {
+        const target = preferredTarget || this.getCurrentHeatStatue();
         if (target) target.heatOffset += amount;
-    }
-
-    isBridgeClosed(bridgeIndex) {
-        const until = this.closedBridges.get(bridgeIndex) || 0;
-        if (until <= this.movesMade) {
-            this.closedBridges.delete(bridgeIndex);
-            return false;
-        }
-        return true;
     }
 
     getLevelProfile() {
@@ -1442,16 +1601,16 @@ export class Game {
             inQuestion: Boolean(this.currentQuestion),
             readyMoves: this.readyMoves,
             bankedCount: this.bankedMoves.size,
+            bankLimit: this.getBankLimit(),
             revealedFalse: this.revealedFalseDoors.size,
             correctDoors: this.correctDoors.size,
             groupHintCount: this.groupHintDoors.size,
             altarReady: this.isAtBonusAltar() && !this.bonusAltar.used,
             finalTrial: profile.finalDoorTrial,
+            heatActive: this.globalHeatUntil > this.elapsed,
+            fireWaveActive: this.fireWaveUntil > this.elapsed,
             questionsAnswered: this.questionsAnswered,
-            questionsCorrect: this.questionsCorrect,
-            closed: Array.from(this.closedBridges.entries())
-                .filter((entry) => entry[1] > this.movesMade)
-                .map((entry) => entry[0] + 1)
+            questionsCorrect: this.questionsCorrect
         };
     }
 

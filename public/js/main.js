@@ -360,7 +360,7 @@ const ui = {
         this.overlay.innerHTML =
             `<div class="outcome" style="color:${color}">${title}</div>` +
             `<div class="outcome-sub">${subtitle}</div>` +
-            `<div class="hint">Ответы: <b>${data.questionsCorrect}/${data.questionsAnswered}</b>. Нажмите <b>R</b> или <b>Enter</b>, чтобы начать заново.</div>`;
+            `<div class="hint">Ответы: <b>${data.questionsCorrect}/${data.questionsAnswered}</b>. Нажмите <b>R</b> или <b>Enter</b>, чтобы повторить текущий режим.</div>`;
         this.overlay.style.display = 'flex';
     },
 
@@ -381,16 +381,17 @@ const ui = {
             `клетка ${data.tile}`;
         const prepared = data.inQuestion ? 'Enter фиксирует ответ' :
             data.readyMoves ? `готовых ходов: ${data.readyMoves}` : 'выберите направление';
-        const bank = data.bankedCount ? `банк: ${data.bankedCount}` : 'банк пуст';
+        const bank = data.bankedCount ? `банк: ${data.bankedCount}/${data.bankLimit}` : 'банк пуст';
         const altar = data.altarReady ? '<span class="hud-alert">алтарь рядом</span>' : '';
         const final = data.finalTrial ? '<span class="hud-danger">неверная дверь смертельна</span>' : '';
-        const closed = data.closed.length ? `закрыты мосты: ${data.closed.join(', ')}` : 'мосты открыты';
+        const heat = data.heatActive ? '<span class="hud-danger">жар ускорен</span>' : '';
+        const wave = data.fireWaveActive ? '<span class="hud-danger">волна огня</span>' : '';
 
         this.hud.innerHTML =
             `<div class="hud-row"><b>Режим ${data.level}</b> ${data.modeName} <span>${data.modeShort}</span></div>` +
             `<div class="hud-row">Мост <b>${data.bridge}/${data.bridges}</b> - ${tileLabel} - ${prepared}</div>` +
             `<div class="hud-row dim">Ложные двери: <b>${data.revealedFalse}/6</b> - группа: <b>${data.groupHintCount}</b> - ${bank}</div>` +
-            `<div class="hud-row dim">${closed} ${altar} ${final}</div>`;
+            `<div class="hud-row dim">${altar} ${final} ${heat} ${wave}</div>`;
     },
 
     showQuestion(current) {
