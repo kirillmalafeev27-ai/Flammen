@@ -2,13 +2,18 @@ import * as THREE from 'three';
 import { Game } from './game.js';
 import { LANGUAGE_LEVELS, LEXICAL_TOPICS, GRAMMAR_TOPICS } from './questions.js';
 
-const RITUAL_SLOTS = [
-    { id: 'wortstellung', title: 'Порядок', role: 'Wortstellung', isWortstellung: true },
-    { id: 'step', title: 'Ход', role: 'Грамматика', isWortstellung: false },
-    { id: 'memory', title: 'Память', role: 'Банк', isWortstellung: false },
-    { id: 'door', title: 'Двери', role: 'Расследование', isWortstellung: false },
-    { id: 'altar', title: 'Алтарь', role: 'Риск', isWortstellung: false }
-];
+const MENU_STATE_KEY = 'flammen_menu_state_v2';
+const BRIDGE_COUNT = 8;
+const RITUAL_SLOTS = Array.from({ length: BRIDGE_COUNT }, (_, index) => ({
+    id: `bridge-${index + 1}`,
+    title: `Мост ${index + 1}`,
+    role: `Перемычка ${index + 1}`,
+    order: 'против часовой'
+}));
+
+function isWortstellungTopic(grammarTopic) {
+    return typeof grammarTopic === 'string' && grammarTopic.includes('Wortstellung');
+}
 
 const rootElement = document.querySelector('#root');
 
@@ -90,6 +95,7 @@ const ui = {
 
     bind(targetGame) {
         game = targetGame;
+        this.loadMenuState();
         this.populateMenu();
         this.startButton.addEventListener('click', () => this.requestStart());
         this.peekButton.addEventListener('click', () => game.peekTimers());
@@ -114,19 +120,52 @@ const ui = {
             if (game.currentQuestion) game.setAnswerSlow(false);
         });
 
-        try {
-            const savedName = localStorage.getItem('flammen_player_name');
-            if (savedName) this.playerName.value = savedName;
-        } catch (error) {
-            // Local storage is optional.
-        }
-
         this.playerName.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 event.preventDefault();
                 this.showStep(2);
             }
         });
+        this.playerName.addEventListener('input', () => this.saveMenuState());
+    },
+
+    loadMenuState() {
+        try {
+            const savedName = localStorage.getItem('flammen_player_name');
+            const raw = localStorage.getItem(MENU_STATE_KEY);
+            if (savedName) this.playerName.value = savedName;
+            if (!raw) return;
+
+            const state = JSON.parse(raw);
+            if (LANGUAGE_LEVELS.includes(state.selectedLevel)) this.selectedLevel = state.selectedLevel;
+            if (LEXICAL_TOPICS.includes(state.selectedLexical)) this.selectedLexical = state.selectedLexical;
+            if (Array.isArray(state.slotAssignments)) {
+                this.slotAssignments = Array.from({ length: RITUAL_SLOTS.length }, (_, index) => {
+                    const topic = state.slotAssignments[index];
+                    return GRAMMAR_TOPICS.includes(topic) ? topic : null;
+                });
+            }
+            if (Number.isInteger(state.selectedStep)) {
+                this.selectedStep = Math.max(1, Math.min(4, state.selectedStep));
+            }
+        } catch (error) {
+            // Local storage is optional.
+        }
+    },
+
+    saveMenuState() {
+        try {
+            const playerName = this.playerName.value.trim();
+            if (playerName) localStorage.setItem('flammen_player_name', playerName);
+            localStorage.setItem(MENU_STATE_KEY, JSON.stringify({
+                selectedLevel: this.selectedLevel,
+                selectedLexical: this.selectedLexical,
+                selectedStep: this.selectedStep,
+                slotAssignments: this.slotAssignments
+            }));
+        } catch (error) {
+            // Local storage is optional.
+        }
     },
 
     populateMenu() {
@@ -134,8 +173,15 @@ const ui = {
         this.renderLexicalGrid();
         this.renderSlots();
         this.renderGrammarPicker();
-        this.showStep(1);
+        this.showStep(this.getRestoredStep());
         this.updateStartButton();
+    },
+
+    getRestoredStep() {
+        if (this.selectedStep >= 4 && this.selectedLevel && this.selectedLexical) return 4;
+        if (this.selectedStep >= 3 && this.selectedLevel) return 3;
+        if (this.selectedStep >= 2) return 2;
+        return 1;
     },
 
     renderLevelButtons() {
@@ -156,6 +202,7 @@ const ui = {
                 this.selectedLevel = level;
                 this.renderLevelButtons();
                 this.updateStartButton();
+                this.saveMenuState();
                 this.showStep(3);
             });
             button.classList.toggle('selected', this.selectedLevel === level);
@@ -175,6 +222,7 @@ const ui = {
                 this.selectedLexical = topic;
                 this.renderLexicalGrid();
                 this.updateStartButton();
+                this.saveMenuState();
                 this.showStep(4);
             });
             this.lexicalGrid.appendChild(button);
@@ -190,20 +238,22 @@ const ui = {
     getSettings() {
         const playerName = this.playerName.value.trim() || 'Spieler';
         try { localStorage.setItem('flammen_player_name', playerName); } catch (error) {}
+        this.saveMenuState();
         return {
             playerName,
             langLevel: this.selectedLevel || 'A2',
             lexicalTopic: this.selectedLexical || LEXICAL_TOPICS[0],
             grammarSlots: this.slotAssignments.map((grammarTopic, index) => ({
                 grammarTopic,
-                isWortstellung: RITUAL_SLOTS[index].isWortstellung
+                bridgeIndex: index,
+                isWortstellung: isWortstellungTopic(grammarTopic)
             }))
         };
     },
 
     requestStart() {
         if (!this.ready || !this.isMenuComplete()) {
-            this.startStatus.textContent = this.ready ? 'Заполните все печати перед стартом.' : 'Загрузка храма...';
+            this.startStatus.textContent = this.ready ? 'Заполните все мосты перед стартом.' : 'Загрузка храма...';
             return;
         }
         game.startRun(this.getSettings());
@@ -217,6 +267,7 @@ const ui = {
         this.progressSteps.forEach((node) => {
             node.classList.toggle('active', node.dataset.progressStep === String(step));
         });
+        this.saveMenuState();
     },
 
     renderSlots() {
@@ -231,13 +282,14 @@ const ui = {
             button.innerHTML =
                 `<div class="slot-bonus">${slot.role}</div>` +
                 `<div class="slot-topic">${grammar || slot.title}</div>` +
-                `<div class="slot-grammar">${grammar ? (slot.isWortstellung ? 'Wortstellung + тема' : 'активная тема') : 'выберите грамматику'}</div>`;
+                `<div class="slot-grammar">${grammar ? `${slot.order}, тема моста` : 'выберите грамматику для моста'}</div>`;
             button.addEventListener('click', () => {
                 if (this.selectedGrammar) {
                     this.assignGrammarToSlot(index, this.selectedGrammar);
                     return;
                 }
                 this.selectedSlotIndex = this.selectedSlotIndex === index ? null : index;
+                this.saveMenuState();
                 this.renderSlots();
                 this.renderGrammarPicker();
             });
@@ -247,21 +299,19 @@ const ui = {
 
     renderGrammarPicker() {
         this.grammarPicker.innerHTML = '';
-        const used = this.slotAssignments.filter(Boolean);
         for (const topic of GRAMMAR_TOPICS) {
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'grammar-tag';
             button.textContent = topic;
-            button.classList.toggle('used', used.includes(topic));
             button.classList.toggle('selected-grammar', this.selectedGrammar === topic);
             button.addEventListener('click', () => {
-                if (used.includes(topic)) return;
                 if (this.selectedSlotIndex !== null) {
                     this.assignGrammarToSlot(this.selectedSlotIndex, topic);
                     return;
                 }
                 this.selectedGrammar = this.selectedGrammar === topic ? null : topic;
+                this.saveMenuState();
                 this.renderSlots();
                 this.renderGrammarPicker();
             });
@@ -270,14 +320,10 @@ const ui = {
     },
 
     assignGrammarToSlot(slotIndex, grammarTopic) {
-        for (let index = 0; index < this.slotAssignments.length; index++) {
-            if (this.slotAssignments[index] === grammarTopic) {
-                this.slotAssignments[index] = null;
-            }
-        }
         this.slotAssignments[slotIndex] = grammarTopic;
         this.selectedGrammar = null;
         this.selectedSlotIndex = null;
+        this.saveMenuState();
         this.renderSlots();
         this.renderGrammarPicker();
         this.updateStartButton();
@@ -333,7 +379,8 @@ const ui = {
         const tileLabel = data.tile === 0 ? 'периметр' :
             data.tile === data.tiles - 1 ? 'дверь' :
             `клетка ${data.tile}`;
-        const prepared = data.inQuestion ? 'Enter подтверждает ход' : 'выберите направление';
+        const prepared = data.inQuestion ? 'Enter фиксирует ответ' :
+            data.readyMoves ? `готовых ходов: ${data.readyMoves}` : 'выберите направление';
         const bank = data.bankedCount ? `банк: ${data.bankedCount}` : 'банк пуст';
         const altar = data.altarReady ? '<span class="hud-alert">алтарь рядом</span>' : '';
         const final = data.finalTrial ? '<span class="hud-danger">неверная дверь смертельна</span>' : '';
@@ -352,14 +399,14 @@ const ui = {
             ? `Алтарь: вопрос ${current.altarIndex}/2`
             : current.hiddenResult
                 ? `Банк хода: мост ${current.targetBridge + 1}, клетка ${current.targetTile}`
-                : `Ход: мост ${current.targetBridge + 1}, клетка ${current.targetTile}`;
+                : `Свободный ход: мост ${current.targetBridge + 1}`;
 
         this.questionMode.textContent = targetLabel;
         this.questionTopic.textContent = `${question.topic} - ${question.level} - ${question.lexicalTopic}`;
         this.questionText.textContent = `${question.text} ${question.display}`;
         this.questionFeedback.textContent = current.hiddenResult
             ? 'Результат скрыт. Удерживайте мышь для замедления, Enter фиксирует вариант под маркером.'
-            : 'Удерживайте мышь для замедления, Enter делает ход только если маркер на правильном варианте.';
+            : 'Удерживайте мышь для замедления. Enter фиксирует ответ; правильный ответ заряжает свободный ход.';
 
         this.questionOptions.innerHTML = '';
         this.optionNodes = question.options.map((option, index) => {

@@ -160,6 +160,7 @@ export class Game {
         this.playerTile = 0;
         this.moveAnim = null;
         this.movesMade = 0;
+        this.readyMoves = 0;
 
         this.keys = {};
         this.cameraYaw = 0;
@@ -603,6 +604,7 @@ export class Game {
         this.currentLevel = 1;
         this.elapsed = 0;
         this.movesMade = 0;
+        this.readyMoves = 0;
         this.questionsAnswered = 0;
         this.questionsCorrect = 0;
         this.correctAnswerStreak = 0;
@@ -638,7 +640,7 @@ export class Game {
         this.ui.hideQuestion();
         this.ui.hidePeek();
         this.ui.update(this);
-        this.ui.showMessage(`Режим 1: ${LEVELS[1].name}. Выберите направление, затем нажмите Enter на правильном ответе, чтобы сделать ход.`, 4200);
+        this.ui.showMessage(`Режим 1: ${LEVELS[1].name}. Enter фиксирует ответ. Правильный ответ заряжает ход, направление выбираете отдельно.`, 4200);
     }
 
     restart() {
@@ -654,6 +656,7 @@ export class Game {
         this.cameraPitch = 0;
         this.startGraceUntil = this.elapsed + START_GRACE;
         this.bankedMoves.clear();
+        this.readyMoves = 0;
         this.releasePointerLock();
     }
 
@@ -748,6 +751,13 @@ export class Game {
             return;
         }
 
+        if (this.readyMoves > 0) {
+            this.readyMoves -= 1;
+            this.beginMove(toBridge, toTile);
+            this.ui.update(this);
+            return;
+        }
+
         const key = moveKey(toBridge, toTile);
         const mode = this.getLevelProfile();
 
@@ -771,7 +781,7 @@ export class Game {
         const token = {};
         this.questionRequestToken = token;
         this.ui.showMessage('Генерирую вопрос...', 1200);
-        const question = await this.questionBank.nextQuestion();
+        const question = await this.questionBank.nextQuestion(this.getQuestionSlotForDetails(details));
         if (this.state !== STATE.PLAYING || this.questionRequestToken !== token) {
             return;
         }
@@ -787,6 +797,18 @@ export class Game {
             markerIndex: 0
         };
         this.ui.showQuestion(this.currentQuestion, this);
+    }
+
+    getQuestionSlotForDetails(details) {
+        if (!details || details.context !== 'move' || !Number.isInteger(details.targetBridge)) return null;
+        const slots = this.settings.grammarSlots || [];
+        const slot = slots.length ? slots[details.targetBridge % slots.length] : null;
+        if (!slot || !slot.grammarTopic) return null;
+        return {
+            bridgeIndex: details.targetBridge,
+            grammarTopic: slot.grammarTopic,
+            isWortstellung: Boolean(slot.isWortstellung)
+        };
     }
 
     setAnswerSlow(on) {
@@ -828,8 +850,8 @@ export class Game {
         if (correct) {
             this.questionsCorrect += 1;
             this.onCorrectTacticalAnswer(fast);
-            this.ui.showMessage(fast ? 'Быстрый правильный ответ. Ход сделан, двери дали знак.' : 'Правильно. Ход сделан.', 1600);
-            this.beginMove(current.targetBridge, current.targetTile);
+            this.readyMoves += 1;
+            this.ui.showMessage(fast ? 'Быстрый правильный ответ. Ход готов, двери дали знак. Выберите направление.' : 'Правильно. Ход готов. Выберите направление.', 1800);
         } else {
             this.onWrongTacticalAnswer('Неверно. Ход не случился, статуя греется быстрее.');
         }
@@ -965,7 +987,7 @@ export class Game {
         if (profile.finalDoorTrial) return 'Неверная дверь завершит забег. Слушайте и смотрите на слабые символы.';
         if (profile.falseHeats) return 'Не каждый тлеющий взгляд станет струей огня.';
         if (profile.gateOffset) return 'Иногда верный ход нужно держать до окна между двумя головами.';
-        return 'Базовый ритм: направление, вопрос и Enter на правильном варианте.';
+        return 'Базовый ритм: Enter фиксирует ответ, правильный ответ заряжает свободный ход.';
     }
 
     applyWrongDoorPenalty() {
@@ -1418,6 +1440,7 @@ export class Game {
             tile: this.playerTile,
             tiles: this.bridges[0].tiles.length,
             inQuestion: Boolean(this.currentQuestion),
+            readyMoves: this.readyMoves,
             bankedCount: this.bankedMoves.size,
             revealedFalse: this.revealedFalseDoors.size,
             correctDoors: this.correctDoors.size,

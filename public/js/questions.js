@@ -1,12 +1,56 @@
 export const LANGUAGE_LEVELS = ['A1', 'A2', 'B1', 'B2'];
 
 export const LEXICAL_TOPICS = [
-    'Reisen und Stadt',
-    'Schule und Beruf',
-    'Essen und Alltag',
-    'Familie und Wohnen',
-    'Natur und Wetter',
-    'Medien und Technik'
+    'Familie',
+    'Freundschaft',
+    'Wohnen',
+    'Hausarbeit',
+    'Schule',
+    'Universität',
+    'Arbeit',
+    'Bewerbung',
+    'Reisen',
+    'Hotel',
+    'Stadt',
+    'Landleben',
+    'Essen und Trinken',
+    'Restaurant',
+    'Einkaufen',
+    'Kleidung',
+    'Gesundheit',
+    'Körper',
+    'Sport',
+    'Freizeit',
+    'Musik',
+    'Filme und Serien',
+    'Natur',
+    'Umwelt',
+    'Verkehr',
+    'Technik',
+    'Internet',
+    'Bücher',
+    'Wetter',
+    'Feiertage',
+    'Notfälle',
+    'Berge',
+    'Camping',
+    'Tiere',
+    'Kunst',
+    'Medien',
+    'Politik',
+    'Alltag',
+    'Zeitmanagement',
+    'Büroarbeit',
+    'Kundenservice',
+    'Studium im Ausland',
+    'Migration',
+    'Wohnungssuche',
+    'Finanzen',
+    'Termine',
+    'Kommunikation',
+    'Gefühle',
+    'Urlaub am Meer',
+    'Winterurlaub'
 ];
 
 export const GRAMMAR_TOPICS = [
@@ -17,29 +61,40 @@ export const GRAMMAR_TOPICS = [
     'Imperativ',
     'Modalverben',
     'Trennbare Verben',
+    'Untrennbare Verben',
     'Reflexive Verben',
     'Verben mit Präpositionen',
     'Lassen',
-    'Artikel',
+    'Werden',
+    'Sein vs. haben',
     'Nominativ',
     'Akkusativ',
     'Dativ',
     'Genitiv',
-    'N-Deklination',
+    'Artikel',
+    'Possessivartikel',
     'Pronomen',
-    'Possessivpronomen',
-    'Adjektivdeklination',
-    'Steigerung',
-    'Wechselpräpositionen',
-    'Lokale Präpositionen',
-    'Temporale Präpositionen',
+    'Personalpronomen',
+    'Relativpronomen',
+    'Fragewörter',
     'Negation',
+    'Adjektivdeklination',
+    'Komparativ',
+    'Superlativ',
+    'Zahlen und Datum',
+    'Temporale Präpositionen',
+    'Lokale Präpositionen',
+    'Wechselpräpositionen',
+    'Präpositionen mit Dativ',
+    'Präpositionen mit Akkusativ',
     'Satzklammer',
     'Wortstellung im Hauptsatz',
     'Wortstellung im Nebensatz',
     'weil-Sätze',
     'dass-Sätze',
     'wenn-Sätze',
+    'obwohl-Sätze',
+    'damit-Sätze',
     'Relativsätze',
     'Indirekte Fragen',
     'Infinitiv mit zu',
@@ -47,7 +102,9 @@ export const GRAMMAR_TOPICS = [
     'Passiv',
     'Plusquamperfekt',
     'Doppelkonjunktionen',
-    'als vs. wenn'
+    'als vs. wenn',
+    'Partizip I und II',
+    'Genitivpräpositionen'
 ];
 
 const LEVEL_RANK = { A1: 1, A2: 2, B1: 3, B2: 4 };
@@ -314,8 +371,8 @@ export class QuestionBank {
         }
     }
 
-    async nextQuestion() {
-        const slot = this._nextGrammarSlot();
+    async nextQuestion(slotOverride = null) {
+        const slot = slotOverride && slotOverride.grammarTopic ? slotOverride : this._nextGrammarSlot();
         try {
             const question = await this._getGeneratedQuestion(slot);
             if (question) return question;
@@ -450,24 +507,24 @@ export class QuestionBank {
 
         const maxRank = LEVEL_RANK[this.level] || LEVEL_RANK.A2;
         if (maxRank <= LEVEL_RANK.A1) {
-            return ['Präsens', 'Artikel', 'Nominativ', 'Akkusativ', 'Wortstellung im Hauptsatz', 'Negation'].map((grammarTopic) => ({
+            return ['Präsens', 'Artikel', 'Nominativ', 'Akkusativ', 'Personalpronomen', 'Negation', 'Fragewörter', 'Wortstellung im Hauptsatz'].map((grammarTopic) => ({
                 grammarTopic,
                 isWortstellung: grammarTopic.includes('Wortstellung')
             }));
         }
         if (maxRank <= LEVEL_RANK.A2) {
-            return ['Perfekt', 'Dativ', 'Modalverben', 'Wechselpräpositionen', 'Trennbare Verben', 'weil-Sätze', 'Adjektivdeklination'].map((grammarTopic) => ({
+            return ['Perfekt', 'Dativ', 'Modalverben', 'Wechselpräpositionen', 'Trennbare Verben', 'Possessivartikel', 'Adjektivdeklination', 'weil-Sätze'].map((grammarTopic) => ({
                 grammarTopic,
                 isWortstellung: grammarTopic.includes('Wortstellung')
             }));
         }
         if (maxRank <= LEVEL_RANK.B1) {
-            return ['Konjunktiv II', 'Infinitiv mit zu', 'Passiv', 'Relativsätze', 'Präteritum', 'Doppelkonjunktionen'].map((grammarTopic) => ({
+            return ['Präteritum', 'Futur I', 'Reflexive Verben', 'Verben mit Präpositionen', 'Relativsätze', 'Indirekte Fragen', 'Infinitiv mit zu', 'Passiv'].map((grammarTopic) => ({
                 grammarTopic,
                 isWortstellung: grammarTopic.includes('Wortstellung')
             }));
         }
-        return ['Genitiv', 'Plusquamperfekt', 'Indirekte Fragen', 'Passiv', 'Konjunktiv II', 'Wortstellung im Nebensatz'].map((grammarTopic) => ({
+        return ['Genitiv', 'Plusquamperfekt', 'Konjunktiv II', 'Passiv', 'Partizip I und II', 'Doppelkonjunktionen', 'Genitivpräpositionen', 'Wortstellung im Nebensatz'].map((grammarTopic) => ({
             grammarTopic,
             isWortstellung: grammarTopic.includes('Wortstellung')
         }));
