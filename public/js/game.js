@@ -66,6 +66,7 @@ const LEVELS = {
         warning: BASE_FIRE_WARNING,
         duration: BASE_FIRE_DURATION,
         decay: BASE_FIRE_DECAY,
+        postFireBreak: BASE_FIRE_DECAY,
         heatSpeed: 1.0,
         runningWave: true,
         bank: false,
@@ -427,7 +428,7 @@ export class Game {
         return {
             group, fireOrigin, flame: null, eyeLight, coal, coalMat,
             position: statuePos, facing: facingDir, tilePosition: tilePos.clone(),
-            heatOffset: 0, isFireActive: false, visualState: 'cold'
+            heatOffset: 0, isFireActive: false, afterFireSafeUntil: 0, visualState: 'cold'
         };
     }
 
@@ -659,6 +660,7 @@ export class Game {
         }
         for (const statue of this.statues) {
             statue.heatOffset = 0;
+            statue.afterFireSafeUntil = 0;
             this.setStatueFlame(statue, false);
             statue.eyeLight.visible = false;
             statue.eyeLight.intensity = 0;
@@ -1349,6 +1351,7 @@ export class Game {
                 s.coal.visible = false;
                 s.coalMat.opacity = 0.04;
                 s.isFireActive = false;
+                s.afterFireSafeUntil = 0;
                 s.visualState = 'cold';
                 continue;
             }
@@ -1359,9 +1362,14 @@ export class Game {
             const fireEnd = cycle.fireEnd;
             const decayEnd = cycle.decayEnd;
             const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.72 && phase < decayEnd;
-            const isFire = fireWave || (!falseHeatWindow && phase >= warning && phase < fireEnd);
-            const isWarning = !fireWave && !falseHeatWindow && phase < warning;
-            const isDecay = !fireWave && !cycle.falseCycle && phase >= fireEnd && phase < decayEnd;
+            const rawFire = fireWave || (!falseHeatWindow && phase >= warning && phase < fireEnd);
+            if (profile.postFireBreak && s.isFireActive && !rawFire) {
+                s.afterFireSafeUntil = Math.max(s.afterFireSafeUntil || 0, this.elapsed + profile.postFireBreak);
+            }
+            const inPostFireBreak = Boolean(profile.postFireBreak && this.elapsed < (s.afterFireSafeUntil || 0));
+            const isFire = !inPostFireBreak && rawFire;
+            const isWarning = !inPostFireBreak && !fireWave && !falseHeatWindow && phase < warning;
+            const isDecay = inPostFireBreak || (!fireWave && !cycle.falseCycle && phase >= fireEnd && phase < decayEnd);
             const falsePhase = (this.elapsed + s.falsePhase) % 7.4;
             const isFalseHeat = !fireWave && (falseHeatWindow ||
                 (profile.falseHeats && !isFire && !isWarning && !isDecay && falsePhase < 1.25));
@@ -1379,7 +1387,9 @@ export class Game {
                 s.coal.scale.setScalar(1.35);
                 s.visualState = 'fire';
             } else if (isDecay) {
-                const k = 1 - (phase - fireEnd) / cycle.decay;
+                const k = inPostFireBreak ?
+                    clamp(((s.afterFireSafeUntil || 0) - this.elapsed) / profile.postFireBreak, 0, 1) :
+                    1 - (phase - fireEnd) / cycle.decay;
                 s.eyeLight.visible = true;
                 s.coal.visible = true;
                 s.eyeLight.color.setHex(0xff7a22);
@@ -1561,7 +1571,10 @@ export class Game {
         const decayEnd = cycle.decayEnd;
         const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.72 && phase < decayEnd;
         row.label = `Голова ${statue.fireIndex + 1}`;
-        if (falseHeatWindow) {
+        if (profile.postFireBreak && this.elapsed < (statue.afterFireSafeUntil || 0)) {
+            row.state = 'перерыв';
+            row.seconds = Math.max(0, statue.afterFireSafeUntil - this.elapsed);
+        } else if (falseHeatWindow) {
             row.state = 'ложное тление';
             row.seconds = Math.max(0, decayEnd - phase);
         } else if (phase < warning) {
