@@ -1288,11 +1288,19 @@ export class Game {
             heatSpeed *= 1.04;
         }
 
+        if (profile.runningWave) {
+            const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].fireStatues.length);
+            const safeGap = profile.postFireBreak ?? decay;
+            if (fireCount >= 3) {
+                period = (duration + safeGap) * fireCount;
+            }
+        }
+
         warning = clamp(warning, 3.2, Math.max(3.2, period - duration - decay - 1.0));
 
         let phaseSeed = positiveModulo(statue.phaseRatio * period, period);
         if (profile.runningWave) {
-            phaseSeed = this.getRunningWavePhaseSeed(statue, period, warning);
+            phaseSeed = this.getRunningWavePhaseSeed(statue, period, warning, duration, profile.postFireBreak ?? decay);
         } else if (profile.gateOffset) {
             phaseSeed = this.getGatePhaseSeed(statue, period, warning);
         }
@@ -1320,9 +1328,10 @@ export class Game {
         return out;
     }
 
-    getRunningWavePhaseSeed(statue, period, warning) {
+    getRunningWavePhaseSeed(statue, period, warning, duration, safeGap) {
         const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].fireStatues.length);
-        const step = Math.min(2.15, period / Math.max(2, fireCount + 2));
+        const minStep = duration + safeGap;
+        const step = Math.max(minStep, period / Math.max(1, fireCount + 1));
         const targetSeconds = (fireCount - 1 - statue.fireIndex) * step;
         const bridgeDrift = statue.bridgeIndex * 0.18;
         return positiveModulo(warning - targetSeconds + bridgeDrift, period);
