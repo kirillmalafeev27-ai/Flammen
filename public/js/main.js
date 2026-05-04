@@ -381,6 +381,7 @@ const ui = {
             `клетка ${data.tile}`;
         const prepared = data.inQuestion ? 'Enter фиксирует ответ' :
             data.readyMoves ? `готовых ходов: ${data.readyMoves}` : 'выберите направление';
+        const route = data.routeMemory ? `${data.routeReturnMode ? 'обратный шлюз' : 'прямой шлюз'}: ${data.openPassages}` : '';
         const bank = data.bankedCount ? `банк: ${data.bankedCount}/${data.bankLimit}` : 'банк пуст';
         const altar = data.altarReady ? '<span class="hud-alert">алтарь рядом</span>' : '';
         const final = data.finalTrial ? '<span class="hud-danger">неверная дверь смертельна</span>' : '';
@@ -390,7 +391,7 @@ const ui = {
         this.hud.innerHTML =
             `<div class="hud-row"><b>Режим ${data.level}</b> ${data.modeName} <span>${data.modeShort}</span></div>` +
             `<div class="hud-row">Мост <b>${data.bridge}/${data.bridges}</b> - ${tileLabel} - ${prepared}</div>` +
-            `<div class="hud-row dim">Помечено ложных дверей: <b>${data.revealedFalse}/6</b> - ${bank}</div>` +
+            `<div class="hud-row dim">Помечено ложных дверей: <b>${data.revealedFalse}/6</b> - ${route || bank}</div>` +
             `<div class="hud-row dim">${altar} ${final} ${heat} ${wave}</div>`;
     },
 

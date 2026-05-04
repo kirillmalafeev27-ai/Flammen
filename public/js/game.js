@@ -38,6 +38,7 @@ const PEEK_HEAT_ACCEL = 0.45;
 const FLAME_ACTIVE_RADIUS_SQ = 144;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
+const GATE_BASE_N = 3.2;
 const GATE_BRIDGE_TIMINGS = [
     { period: 1.00, warning: -0.4, duration: 1.00, phase: 0.0, heatSpeed: 1.00 },
     { period: 1.06, warning: 0.2, duration: 0.92, phase: 1.4, heatSpeed: 0.98 },
@@ -48,7 +49,6 @@ const GATE_BRIDGE_TIMINGS = [
     { period: 0.90, warning: -0.7, duration: 1.04, phase: 5.9, heatSpeed: 1.06 },
     { period: 1.04, warning: 0.4, duration: 1.10, phase: 6.8, heatSpeed: 0.99 }
 ];
-const GATE_FIRE_TARGETS = [8.4, 2.2, 10.6, 4.4, 12.0, 6.4];
 
 const STATE = {
     INTRO: 'intro',
@@ -84,6 +84,7 @@ const LEVELS = {
         heatSpeed: 1.0,
         gateOffset: true,
         bridgeUniqueTiming: true,
+        routeMemory: true,
         bank: false,
         falseHeats: false,
         fastAlternate: false,
@@ -97,7 +98,10 @@ const LEVELS = {
         duration: 2.0,
         decay: BASE_FIRE_DECAY,
         heatSpeed: 1.0,
-        falseCycleModulo: 4,
+        pairedStoneTiming: true,
+        probabilisticFire: true,
+        fireChanceBase: 0.48,
+        fireChanceSpread: 0.34,
         bank: false,
         falseHeats: true,
         fastAlternate: false,
@@ -154,6 +158,24 @@ function moveKey(bridgeIndex, tileIndex) {
     return `${bridgeIndex}:${tileIndex}`;
 }
 
+function passageKey(fromBridge, fromTile, toBridge, toTile) {
+    return `${fromBridge}:${fromTile}>${toBridge}:${toTile}`;
+}
+
+function gateJitter(bridgeIndex, pairIndex) {
+    const raw = Math.sin((bridgeIndex + 1) * 17.13 + (pairIndex + 1) * 9.71) * 43758.5453;
+    return 1 + (raw - Math.floor(raw));
+}
+
+function seededUnit(...parts) {
+    let seed = 0;
+    for (let i = 0; i < parts.length; i++) {
+        seed += (parts[i] + 1) * (37.17 + i * 19.91);
+    }
+    const raw = Math.sin(seed) * 43758.5453;
+    return raw - Math.floor(raw);
+}
+
 export class Game {
     constructor(scene, camera, renderer, ui) {
         this.scene = scene;
@@ -193,6 +215,8 @@ export class Game {
         this.questionLoading = false;
         this.questionRequestToken = null;
         this.bankedMoves = new Map();
+        this.openPassages = new Set();
+        this.routeReturnMode = false;
         this.answerSlowHeld = false;
         this.answerMarkerPosition = 0;
         this.answerMarkerIndex = 0;
@@ -586,6 +610,8 @@ export class Game {
             if (this.currentQuestion) {
                 if (e.code === 'Enter') {
                     this.confirmAnswer();
+                } else {
+                    this.tryCancelQuestionByRetreat(e.code);
                 }
                 return;
             }
@@ -645,6 +671,8 @@ export class Game {
         if (!preserveDoorIntel) this.revealedFalseDoors.clear();
         this.groupHintDoors.clear();
         this.bankedMoves.clear();
+        this.openPassages.clear();
+        this.routeReturnMode = false;
         this.currentQuestion = null;
         this.questionLoading = false;
         this.questionRequestToken = null;
@@ -702,6 +730,7 @@ export class Game {
         this.cameraYaw = this.bridges[0].angle + Math.PI;
         this.cameraPitch = 0;
         this.startGraceUntil = this.elapsed + START_GRACE;
+        this.routeReturnMode = false;
         this.bankedMoves.clear();
         this.readyMoves = 0;
         this.releasePointerLock();
@@ -739,23 +768,80 @@ export class Game {
         );
     }
 
+    getMovementVectorForCode(code) {
+        switch (code) {
+            case 'ArrowUp':
+            case 'KeyW':
+                return { forward: 1, side: 0 };
+            case 'ArrowDown':
+            case 'KeyS':
+                return { forward: -1, side: 0 };
+            case 'ArrowLeft':
+            case 'KeyA':
+                return { forward: 0, side: -1 };
+            case 'ArrowRight':
+            case 'KeyD':
+                return { forward: 0, side: 1 };
+            default:
+                return null;
+        }
+    }
+
     updateCameraBasis() {
         this._cameraForward.set(Math.cos(this.cameraYaw), 0, Math.sin(this.cameraYaw));
         this._cameraRight.crossVectors(this._cameraForward, WORLD_UP).normalize();
     }
 
     tryMoveRelative(forwardScale, sideScale) {
+        const direction = this.getDirectionFromInput(forwardScale, sideScale);
+        if (!direction) return;
+        this.tryMoveToward(direction);
+    }
+
+    getDirectionFromInput(forwardScale, sideScale) {
         this.updateCameraBasis();
         this._moveDesired.set(0, 0, 0)
             .addScaledVector(this._cameraForward, forwardScale)
             .addScaledVector(this._cameraRight, sideScale);
 
-        if (this._moveDesired.lengthSq() < 1e-6) return;
+        if (this._moveDesired.lengthSq() < 1e-6) return null;
         this._moveDesired.normalize();
-        this.tryMoveToward(this._moveDesired);
+        return this._moveDesired;
+    }
+
+    tryCancelQuestionByRetreat(code) {
+        if (!this.currentQuestion || !this.getLevelProfile().routeMemory) return false;
+        if (this.currentQuestion.context !== 'move') return false;
+        const input = this.getMovementVectorForCode(code);
+        if (!input) return false;
+        const direction = this.getDirectionFromInput(input.forward, input.side);
+        if (!direction) return false;
+        const target = this.getMoveTargetToward(direction);
+        if (!target || !this.isRetreatDirection(target.bridge, target.tile)) return false;
+
+        const free = this.isPassageOpen(this.playerBridge, this.playerTile, target.bridge, target.tile);
+        this.cancelCurrentQuestion(free ?
+            'Вопрос убран. Отступление по открытому пути свободно.' :
+            'Вопрос убран. Для обратного шлюза нужен отдельный ответ.');
+        this.requestMove(target.bridge, target.tile);
+        return true;
+    }
+
+    cancelCurrentQuestion(message) {
+        this.currentQuestion = null;
+        this.questionLoading = false;
+        this.questionRequestToken = null;
+        this.answerSlowHeld = false;
+        this.ui.hideQuestion();
+        this.ui.showMessage(message, 1800);
     }
 
     tryMoveToward(direction) {
+        const target = this.getMoveTargetToward(direction);
+        if (target) this.requestMove(target.bridge, target.tile);
+    }
+
+    getMoveTargetToward(direction) {
         let bestBridge = this.playerBridge;
         let bestTile = this.playerTile;
         let bestDot = MOVE_DOT_THRESHOLD;
@@ -787,15 +873,30 @@ export class Game {
         }
 
         if (bestBridge !== this.playerBridge || bestTile !== this.playerTile) {
-            this.requestMove(bestBridge, bestTile);
+            return { bridge: bestBridge, tile: bestTile };
         }
+        return null;
     }
 
     requestMove(toBridge, toTile) {
         if (this.questionLoading) return;
-        if (toTile === cfg.tiles - 1 && this.revealedFalseDoors.has(toBridge)) {
-            this.playDoorTone(false);
-            this.ui.showMessage('Эта дверь уже раскрыта как ложная. Ход туда не нужен.', 1800);
+
+        if (this.getLevelProfile().routeMemory) {
+            if (this.isPassageOpen(this.playerBridge, this.playerTile, toBridge, toTile)) {
+                this.beginMove(toBridge, toTile);
+                this.ui.update(this);
+                return;
+            }
+
+            this.openQuestion({
+                context: 'move',
+                fromBridge: this.playerBridge,
+                fromTile: this.playerTile,
+                targetBridge: toBridge,
+                targetTile: toTile,
+                hiddenResult: false,
+                routeUnlock: true
+            });
             return;
         }
 
@@ -824,6 +925,28 @@ export class Game {
         }
 
         this.openQuestion({ context: 'move', targetBridge: toBridge, targetTile: toTile, hiddenResult: false });
+    }
+
+    isPassageOpen(fromBridge, fromTile, toBridge, toTile) {
+        if (fromBridge === toBridge && fromTile === toTile) return true;
+        if (fromTile === 0 && toTile === 0) return true;
+        if (this.openPassages.has(passageKey(fromBridge, fromTile, toBridge, toTile))) return true;
+        if (!this.routeReturnMode && this.openPassages.has(passageKey(toBridge, toTile, fromBridge, fromTile))) return true;
+        return false;
+    }
+
+    openPassage(fromBridge, fromTile, toBridge, toTile) {
+        this.openPassages.add(passageKey(fromBridge, fromTile, toBridge, toTile));
+    }
+
+    isRetreatDirection(toBridge, toTile) {
+        if (toBridge === this.playerBridge && toTile < this.playerTile) {
+            return true;
+        }
+        if (this.playerTile === 0 && toTile === 0 && toBridge !== this.playerBridge) {
+            return true;
+        }
+        return false;
     }
 
     async openQuestion(details) {
@@ -902,10 +1025,19 @@ export class Game {
         if (correct) {
             this.questionsCorrect += 1;
             const tacticalNotes = this.onCorrectTacticalAnswer(fast);
-            this.readyMoves += 1;
-            const baseMessage = fast ? 'Быстрый правильный ответ. Ход готов, двери дали знак.' : 'Правильно. Ход готов.';
             const note = tacticalNotes.length ? ` ${tacticalNotes.join(' ')}` : '';
-            this.ui.showMessage(`${baseMessage}${note} Выберите направление.`, 2200);
+            if (current.routeUnlock) {
+                this.openPassage(current.fromBridge, current.fromTile, current.targetBridge, current.targetTile);
+                const reverse = current.targetTile < current.fromTile;
+                const baseMessage = fast ?
+                    `Быстрый правильный ответ. ${reverse ? 'Обратный переход' : 'Переход'} открыт, двери дали знак.` :
+                    `Правильно. ${reverse ? 'Обратный переход' : 'Переход'} открыт.`;
+                this.ui.showMessage(`${baseMessage}${note} Теперь можно пройти туда без вопроса.`, 2400);
+            } else {
+                this.readyMoves += 1;
+                const baseMessage = fast ? 'Быстрый правильный ответ. Ход готов, двери дали знак.' : 'Правильно. Ход готов.';
+                this.ui.showMessage(`${baseMessage}${note} Выберите направление.`, 2200);
+            }
         } else {
             this.onWrongTacticalAnswer('Неверно. Ход не случился, статуя греется быстрее.');
         }
@@ -1036,6 +1168,8 @@ export class Game {
         this.groupHintDoors.clear();
         this.groupHintUntil = 0;
         this.bankedMoves.clear();
+        this.openPassages.clear();
+        this.routeReturnMode = false;
         this.currentQuestion = null;
         this.answerSlowHeld = false;
         this.startGraceUntil = START_GRACE;
@@ -1056,6 +1190,7 @@ export class Game {
         if (profile.bank) return 'Ответы можно закладывать в банк, но результат скрыт до шага.';
         if (profile.finalDoorTrial) return 'Неверная дверь завершит забег. Слушайте и смотрите на слабые символы.';
         if (profile.falseHeats) return 'Не каждый тлеющий взгляд станет струей огня.';
+        if (profile.routeMemory) return 'Вопрос открывает конкретный переход. Уже открытые камни можно проходить свободно.';
         if (profile.gateOffset) return 'Иногда верный ход нужно держать до окна между двумя головами.';
         return 'Базовый ритм: Enter фиксирует ответ, правильный ответ заряжает свободный ход.';
     }
@@ -1191,6 +1326,10 @@ export class Game {
                 this.playerTile = this.moveAnim.toTile;
                 this.moveAnim = null;
                 this.movesMade += 1;
+                if (this.getLevelProfile().routeMemory && this.playerTile === cfg.tiles - 1 && !this.routeReturnMode) {
+                    this.routeReturnMode = true;
+                    this.ui.showMessage('Дверной конец достигнут. Обратный путь теперь открывается отдельными ответами.', 2600);
+                }
                 this.ui.update(this);
                 if (this.playerTile === cfg.tiles - 1) {
                     this.tryEnterDoor();
@@ -1301,6 +1440,8 @@ export class Game {
         let phaseSeed = positiveModulo(statue.phaseRatio * period, period);
         if (profile.runningWave) {
             phaseSeed = this.getRunningWavePhaseSeed(statue, period, warning, duration, profile.postFireBreak ?? decay);
+        } else if (profile.pairedStoneTiming) {
+            phaseSeed = this.getPairedStonePhaseSeed(statue, period, warning);
         } else if (profile.gateOffset) {
             phaseSeed = this.getGatePhaseSeed(statue, period, warning);
         }
@@ -1320,11 +1461,7 @@ export class Game {
         out.fireEnd = warning + duration;
         out.decayEnd = warning + duration + decay;
         out.cycleIndex = cycleIndex;
-        out.falseCycle = Boolean(
-            profile.falseHeats &&
-            profile.falseCycleModulo &&
-            ((cycleIndex + statue.bridgeIndex * 2 + statue.fireIndex) % profile.falseCycleModulo === 0)
-        );
+        out.falseCycle = this.isFalseFireCycle(statue, profile, cycleIndex);
         return out;
     }
 
@@ -1338,8 +1475,39 @@ export class Game {
     }
 
     getGatePhaseSeed(statue, period, warning) {
-        const target = GATE_FIRE_TARGETS[statue.fireIndex % GATE_FIRE_TARGETS.length] * (period / 13.0);
+        const pairIndex = Math.floor(statue.fireIndex / 2);
+        const isLongGate = statue.fireIndex % 2 === 1;
+        const target = isLongGate ?
+            2 * GATE_BASE_N + gateJitter(statue.bridgeIndex, pairIndex) :
+            GATE_BASE_N;
         return positiveModulo(warning - target, period);
+    }
+
+    getPairedStonePhaseSeed(statue, period, warning) {
+        const pairIndex = Math.floor(statue.fireIndex / 2);
+        const isLong = statue.fireIndex % 2 === 1;
+        const pairOffset = pairIndex * GATE_BASE_N * 0.75;
+        const target = (isLong ? 2 * GATE_BASE_N : GATE_BASE_N) + pairOffset;
+        return positiveModulo(warning - target, period);
+    }
+
+    getStatueFireChance(statue, profile) {
+        const spread = profile.fireChanceSpread ?? 0.25;
+        const base = profile.fireChanceBase ?? 0.5;
+        const perStone = seededUnit(statue.bridgeIndex, statue.fireIndex, 11) - 0.5;
+        return clamp(base + perStone * spread, 0.2, 0.82);
+    }
+
+    isFalseFireCycle(statue, profile, cycleIndex) {
+        if (!profile.falseHeats) return false;
+        if (profile.probabilisticFire) {
+            const chance = this.getStatueFireChance(statue, profile);
+            return seededUnit(statue.bridgeIndex, statue.fireIndex, cycleIndex, 29) >= chance;
+        }
+        return Boolean(
+            profile.falseCycleModulo &&
+            ((cycleIndex + statue.bridgeIndex * 2 + statue.fireIndex) % profile.falseCycleModulo === 0)
+        );
     }
 
     updateStatues(dt) {
@@ -1369,14 +1537,14 @@ export class Game {
             const warning = cycle.warning;
             const fireEnd = cycle.fireEnd;
             const decayEnd = cycle.decayEnd;
-            const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.72 && phase < decayEnd;
+            const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.45 && phase < decayEnd;
             const rawFire = fireWave || (!falseHeatWindow && phase >= warning && phase < fireEnd);
             if (profile.postFireBreak && s.isFireActive && !rawFire) {
                 s.afterFireSafeUntil = Math.max(s.afterFireSafeUntil || 0, this.elapsed + profile.postFireBreak);
             }
             const inPostFireBreak = Boolean(profile.postFireBreak && this.elapsed < (s.afterFireSafeUntil || 0));
             const isFire = !inPostFireBreak && rawFire;
-            const isWarning = !inPostFireBreak && !fireWave && !falseHeatWindow && phase < warning;
+            const isWarning = !inPostFireBreak && !fireWave && !cycle.falseCycle && phase < warning;
             const isDecay = inPostFireBreak || (!fireWave && !cycle.falseCycle && phase >= fireEnd && phase < decayEnd);
             const falsePhase = (this.elapsed + s.falsePhase) % 7.4;
             const isFalseHeat = !fireWave && (falseHeatWindow ||
@@ -1410,23 +1578,31 @@ export class Game {
                 const k = phase / warning;
                 s.eyeLight.visible = true;
                 s.coal.visible = true;
-                s.eyeLight.color.setHex(0xff7a22);
-                s.eyeLight.intensity = 0.5 + k * 3.6 + Math.sin(this.elapsed * 18) * 0.22;
-                s.coalMat.color.setHex(k > 0.68 ? 0xff4d1a : 0xffa03a);
-                s.coalMat.opacity = 0.18 + k * 0.56;
-                s.coal.scale.setScalar(0.75 + k * 0.45);
+                if (profile.probabilisticFire) {
+                    s.eyeLight.color.setHex(0xff2518);
+                    s.eyeLight.intensity = 0.7 + k * 4.4 + Math.sin(this.elapsed * 22) * 0.28;
+                    s.coalMat.color.setHex(k > 0.5 ? 0xff1f12 : 0xff6630);
+                    s.coalMat.opacity = 0.24 + k * 0.62;
+                    s.coal.scale.setScalar(0.78 + k * 0.5);
+                } else {
+                    s.eyeLight.color.setHex(0xff7a22);
+                    s.eyeLight.intensity = 0.5 + k * 3.6 + Math.sin(this.elapsed * 18) * 0.22;
+                    s.coalMat.color.setHex(k > 0.68 ? 0xff4d1a : 0xffa03a);
+                    s.coalMat.opacity = 0.18 + k * 0.56;
+                    s.coal.scale.setScalar(0.75 + k * 0.45);
+                }
                 s.visualState = 'warming';
             } else if (isFalseHeat) {
                 const k = falseHeatWindow ?
-                    1 - clamp((phase - warning * 0.72) / Math.max(0.01, decayEnd - warning * 0.72), 0, 1) :
+                    1 - clamp((phase - warning * 0.45) / Math.max(0.01, decayEnd - warning * 0.45), 0, 1) :
                     1 - falsePhase / 1.25;
                 s.eyeLight.visible = true;
                 s.coal.visible = true;
-                s.eyeLight.color.setHex(0xffaa55);
-                s.eyeLight.intensity = 0.8 + k * 0.75;
-                s.coalMat.color.setHex(0xc77a2b);
-                s.coalMat.opacity = 0.28 + k * 0.12;
-                s.coal.scale.setScalar(0.72);
+                s.eyeLight.color.setHex(0xe0a45a);
+                s.eyeLight.intensity = 0.45 + k * 0.85;
+                s.coalMat.color.setHex(0xb97835);
+                s.coalMat.opacity = 0.2 + k * 0.16;
+                s.coal.scale.setScalar(0.66 + k * 0.08);
                 s.visualState = 'false_heat';
             } else {
                 s.eyeLight.visible = false;
@@ -1577,7 +1753,7 @@ export class Game {
         const warning = cycle.warning;
         const fireEnd = cycle.fireEnd;
         const decayEnd = cycle.decayEnd;
-        const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.72 && phase < decayEnd;
+        const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.45 && phase < decayEnd;
         row.label = `Голова ${statue.fireIndex + 1}`;
         if (profile.postFireBreak && this.elapsed < (statue.afterFireSafeUntil || 0)) {
             row.state = 'перерыв';
@@ -1586,7 +1762,7 @@ export class Game {
             row.state = 'ложное тление';
             row.seconds = Math.max(0, decayEnd - phase);
         } else if (phase < warning) {
-            row.state = cycle.falseCycle && phase > warning * 0.72 ? 'ложный нагрев' : 'до огня';
+            row.state = cycle.falseCycle ? 'тихое ложное окно' : 'красный warning';
             row.seconds = Math.max(0, warning - phase);
         } else if (phase < fireEnd) {
             row.state = 'струя';
@@ -1621,6 +1797,9 @@ export class Game {
             tiles: this.bridges[0].tiles.length,
             inQuestion: Boolean(this.currentQuestion),
             readyMoves: this.readyMoves,
+            routeMemory: Boolean(profile.routeMemory),
+            routeReturnMode: this.routeReturnMode,
+            openPassages: this.openPassages.size,
             bankedCount: this.bankedMoves.size,
             bankLimit: this.getBankLimit(),
             revealedFalse: this.revealedFalseDoors.size,
