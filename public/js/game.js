@@ -110,15 +110,19 @@ const LEVELS = {
     4: {
         name: 'Банк вопросов',
         short: 'заготовка',
-        period: 11.5,
-        warning: 5.1,
-        duration: 1.8,
+        period: 20.0,
+        warning: 15.0,
+        duration: 3.0,
         decay: BASE_FIRE_DECAY,
-        heatSpeed: 1.02,
+        heatSpeed: 1.0,
         bank: true,
         bankLimit: 2,
+        bankBatchSize: 2,
+        bankSprintFire: true,
+        bankSprintPeriod: 6.0,
+        bankSprintGap: 1.0,
         falseHeats: false,
-        fastAlternate: true,
+        fastAlternate: false,
         finalDoorTrial: false
     },
     5: {
@@ -152,10 +156,6 @@ function shuffle(items) {
         [copy[i], copy[j]] = [copy[j], copy[i]];
     }
     return copy;
-}
-
-function moveKey(bridgeIndex, tileIndex) {
-    return `${bridgeIndex}:${tileIndex}`;
 }
 
 function passageKey(fromBridge, fromTile, toBridge, toTile) {
@@ -194,6 +194,7 @@ export class Game {
         this.statues = [];
         this.doors = [];
         this.correctDoors = new Set();
+        this.foundCorrectDoors = new Set();
         this.revealedFalseDoors = new Set();
         this.groupHintDoors = new Set();
         this.groupHintUntil = 0;
@@ -215,6 +216,8 @@ export class Game {
         this.questionLoading = false;
         this.questionRequestToken = null;
         this.bankedMoves = new Map();
+        this.bankRun = null;
+        this.queuedBankMoves = [];
         this.openPassages = new Set();
         this.routeReturnMode = false;
         this.answerSlowHeld = false;
@@ -573,6 +576,7 @@ export class Game {
 
     randomizeCorrectDoors() {
         this.correctDoors.clear();
+        this.foundCorrectDoors.clear();
         const idx = Array.from({ length: cfg.bridges }, (_, i) => i);
         for (let i = idx.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
@@ -668,9 +672,14 @@ export class Game {
         this.questionsCorrect = 0;
         this.correctAnswerStreak = 0;
         this.wrongDoorAttempts = 0;
-        if (!preserveDoorIntel) this.revealedFalseDoors.clear();
+        if (!preserveDoorIntel) {
+            this.revealedFalseDoors.clear();
+            this.foundCorrectDoors.clear();
+        }
         this.groupHintDoors.clear();
         this.bankedMoves.clear();
+        this.bankRun = null;
+        this.queuedBankMoves = [];
         this.openPassages.clear();
         this.routeReturnMode = false;
         this.currentQuestion = null;
@@ -699,6 +708,7 @@ export class Game {
         if (!preserveDoorIntel || this.correctDoors.size < 2) {
             this.randomizeCorrectDoors();
         } else {
+            this.foundCorrectDoors.clear();
             this.refreshDoorVisuals();
         }
         if (this.currentLevel === 5) {
@@ -732,6 +742,8 @@ export class Game {
         this.startGraceUntil = this.elapsed + START_GRACE;
         this.routeReturnMode = false;
         this.bankedMoves.clear();
+        this.bankRun = null;
+        this.queuedBankMoves = [];
         this.readyMoves = 0;
         this.releasePointerLock();
     }
@@ -907,24 +919,75 @@ export class Game {
             return;
         }
 
-        const key = moveKey(toBridge, toTile);
         const mode = this.getLevelProfile();
 
         if (mode.bank) {
-            const banked = this.bankedMoves.get(key);
-            if (banked) {
-                this.revealBankedMove(key, banked);
-                return;
-            }
-            if (this.bankedMoves.size >= this.getBankLimit()) {
-                this.ui.showMessage('Банк полон: сначала вскройте один подготовленный ход.', 1800);
-                return;
-            }
-            this.openQuestion({ context: 'move', targetBridge: toBridge, targetTile: toTile, hiddenResult: true });
+            this.openBankQuestion(toBridge, toTile);
             return;
         }
 
         this.openQuestion({ context: 'move', targetBridge: toBridge, targetTile: toTile, hiddenResult: false });
+    }
+
+    openBankQuestion(toBridge, toTile) {
+        if (!this.bankRun) {
+            this.bankRun = this.createBankRun(toBridge, toTile);
+        }
+
+        const target = this.getNextBankTarget(this.bankRun);
+        if (!target) {
+            this.bankRun = null;
+            this.ui.showMessage('Банк сброшен: дальше в этом направлении нет камня.', 1600);
+            return;
+        }
+
+        this.bankRun.path.push(target);
+        this.openQuestion({
+            context: 'move',
+            targetBridge: target.bridge,
+            targetTile: target.tile,
+            hiddenResult: true,
+            bankBatch: true
+        });
+    }
+
+    createBankRun(toBridge, toTile) {
+        const originBridge = this.playerBridge;
+        const originTile = this.playerTile;
+        let tileStep = 0;
+        let bridgeStep = 0;
+
+        if (toBridge === originBridge && toTile !== originTile) {
+            tileStep = Math.sign(toTile - originTile);
+        } else if (originTile === 0 && toTile === 0 && toBridge !== originBridge) {
+            const clockwise = positiveModulo(toBridge - originBridge, cfg.bridges);
+            bridgeStep = clockwise === 1 ? 1 : -1;
+        }
+
+        return {
+            originBridge,
+            originTile,
+            tileStep,
+            bridgeStep,
+            path: [],
+            answers: []
+        };
+    }
+
+    getNextBankTarget(run) {
+        const stepNumber = run.path.length + 1;
+        if (run.tileStep) {
+            const tile = run.originTile + run.tileStep * stepNumber;
+            if (tile < 0 || tile >= this.bridges[run.originBridge].tiles.length) return null;
+            return { bridge: run.originBridge, tile };
+        }
+
+        if (run.bridgeStep) {
+            const bridge = positiveModulo(run.originBridge + run.bridgeStep * stepNumber, cfg.bridges);
+            return { bridge, tile: 0 };
+        }
+
+        return null;
     }
 
     isPassageOpen(fromBridge, fromTile, toBridge, toTile) {
@@ -1010,15 +1073,7 @@ export class Game {
         }
 
         if (current.hiddenResult) {
-            const key = moveKey(current.targetBridge, current.targetTile);
-            this.bankedMoves.set(key, {
-                targetBridge: current.targetBridge,
-                targetTile: current.targetTile,
-                correct,
-                fast
-            });
-            this.ui.showMessage('Ответ заложен в банк. Результат откроется при шаге.', 2200);
-            this.ui.update(this);
+            this.handleBankAnswer(current, correct, fast);
             return;
         }
 
@@ -1045,20 +1100,49 @@ export class Game {
         this.ui.update(this);
     }
 
-    revealBankedMove(key, banked) {
-        this.bankedMoves.delete(key);
-        if (banked.correct) {
-            this.questionsCorrect += 1;
-            const tacticalNotes = this.onCorrectTacticalAnswer(banked.fast);
-            const note = tacticalNotes.length ? ` ${tacticalNotes.join(' ')}` : '';
-            this.ui.showMessage(`Банк сработал: ход был правильным.${note}`, 1900);
-            this.beginMove(banked.targetBridge, banked.targetTile);
+    handleBankAnswer(current, correct, fast) {
+        if (!this.bankRun) {
+            this.bankRun = this.createBankRun(current.targetBridge, current.targetTile);
+            this.bankRun.path.push({ bridge: current.targetBridge, tile: current.targetTile });
+        }
+
+        this.bankRun.answers.push({ correct, fast });
+        const batchSize = this.getBankBatchSize();
+        if (this.bankRun.answers.length < batchSize) {
+            this.ui.showMessage(`Банк: ${this.bankRun.answers.length}/${batchSize}. Сделайте ещё один шаг, чтобы получить вторую плашку.`, 2200);
             this.ui.update(this);
             return;
         }
 
-        this.onWrongTacticalAnswer('Банк вскрылся ошибкой. Ход потерян, время ушло.');
+        const answers = this.bankRun.answers.slice(0, batchSize);
+        const path = this.bankRun.path.slice(0, batchSize);
+        const correctCount = answers.filter((answer) => answer.correct).length;
+        const notes = [];
+
+        for (const answer of answers) {
+            if (!answer.correct) continue;
+            this.questionsCorrect += 1;
+            notes.push(...this.onCorrectTacticalAnswer(answer.fast));
+        }
+
+        this.bankRun = null;
+
+        if (correctCount > 0) {
+            const note = notes.length ? ` ${notes.join(' ')}` : '';
+            this.ui.showMessage(`Банк вскрылся: ${correctCount}/${batchSize}. Делаю ${correctCount} ${correctCount === 1 ? 'шаг' : 'шага'}.${note}`, 2200);
+            this.queueBankMoves(path.slice(0, correctCount));
+        } else {
+            this.onWrongTacticalAnswer(`Банк вскрылся: 0/${batchSize}. Ходы потеряны, статуя нагрелась.`);
+        }
+
         this.ui.update(this);
+    }
+
+    queueBankMoves(path) {
+        if (!path.length) return;
+        this.queuedBankMoves = path.slice(1);
+        const first = path[0];
+        this.beginMove(first.bridge, first.tile);
     }
 
     onCorrectTacticalAnswer(fast) {
@@ -1143,18 +1227,45 @@ export class Game {
 
         this.playDoorTone(correct);
 
-        if (finalTrial) {
-            this.finishRun(correct ? STATE.WON : STATE.WRONG_DOOR);
+        if (correct) {
+            this.handleCorrectDoor(finalTrial);
             return true;
         }
 
-        if (correct) {
-            this.advanceLevel();
+        if (finalTrial) {
+            this.finishRun(STATE.WRONG_DOOR);
             return true;
         }
 
         this.applyWrongDoorPenalty();
         return true;
+    }
+
+    handleCorrectDoor(finalTrial) {
+        if (this.foundCorrectDoors.has(this.playerBridge)) {
+            this.ui.showMessage(`Эта верная дверь уже засчитана: ${this.foundCorrectDoors.size}/${this.correctDoors.size}. Ищите вторую.`, 1800);
+            return;
+        }
+
+        this.foundCorrectDoors.add(this.playerBridge);
+        this.refreshDoorVisuals();
+
+        if (this.foundCorrectDoors.size >= this.correctDoors.size) {
+            this.ui.showMessage('Обе верные двери найдены.', 1200);
+            if (finalTrial) {
+                this.finishRun(STATE.WON);
+            } else {
+                this.advanceLevel();
+            }
+            return;
+        }
+
+        if (!this.getLevelProfile().routeMemory) {
+            this.readyMoves = Math.max(this.readyMoves, 1);
+        }
+        this.startGraceUntil = this.elapsed + 1.4;
+        this.ui.showMessage(`Верная дверь найдена: ${this.foundCorrectDoors.size}/${this.correctDoors.size}. Нужна ещё одна.`, 2600);
+        this.ui.update(this);
     }
 
     advanceLevel() {
@@ -1167,7 +1278,10 @@ export class Game {
         this.elapsed = 0;
         this.groupHintDoors.clear();
         this.groupHintUntil = 0;
+        this.foundCorrectDoors.clear();
         this.bankedMoves.clear();
+        this.bankRun = null;
+        this.queuedBankMoves = [];
         this.openPassages.clear();
         this.routeReturnMode = false;
         this.currentQuestion = null;
@@ -1197,12 +1311,17 @@ export class Game {
 
     getBankLimit() {
         const profile = this.getLevelProfile();
-        return profile.bankLimit || (this.currentLevel >= 4 ? 2 : 1);
+        return profile.bankBatchSize || profile.bankLimit || (this.currentLevel >= 4 ? 2 : 1);
+    }
+
+    getBankBatchSize() {
+        const profile = this.getLevelProfile();
+        return profile.bankBatchSize || profile.bankLimit || 2;
     }
 
     pickWrongDoorPenalty() {
         const penalties = ['heat', 'wave'];
-        if (this.getLevelProfile().bank && this.bankedMoves.size > 0) {
+        if (this.getLevelProfile().bank && (this.bankedMoves.size > 0 || this.bankRun)) {
             penalties.push('clearBank');
         }
         const penalty = penalties[this.wrongDoorAttempts % penalties.length];
@@ -1237,8 +1356,10 @@ export class Game {
             }
             notes.push('Ближайшие головы слегка ускорили нагрев, но есть короткая защита от сгорания.');
         } else if (penalty === 'clearBank') {
-            const count = this.bankedMoves.size;
+            const count = this.bankedMoves.size + (this.bankRun ? this.bankRun.answers.length : 0);
             this.bankedMoves.clear();
+            this.bankRun = null;
+            this.queuedBankMoves = [];
             notes.push(count ? `Банк ходов сгорел: ${count}, но шаг отступления сохранён.` : 'Банк оказался пуст, штраф ушёл в лёгкий жар.');
             if (!count) this.globalHeatUntil = this.elapsed + 4;
         } else if (penalty === 'wave') {
@@ -1291,6 +1412,8 @@ export class Game {
         this.currentQuestion = null;
         this.questionLoading = false;
         this.questionRequestToken = null;
+        this.bankRun = null;
+        this.queuedBankMoves = [];
         for (const statue of this.statues) {
             this.setStatueFlame(statue, false);
             statue.eyeLight.visible = false;
@@ -1331,7 +1454,10 @@ export class Game {
                     this.ui.showMessage('Дверной конец достигнут. Обратный путь теперь открывается отдельными ответами.', 2600);
                 }
                 this.ui.update(this);
-                if (this.playerTile === cfg.tiles - 1) {
+                if (this.state === STATE.PLAYING && this.playerTile !== cfg.tiles - 1 && this.queuedBankMoves.length) {
+                    const next = this.queuedBankMoves.shift();
+                    this.beginMove(next.bridge, next.tile);
+                } else if (this.playerTile === cfg.tiles - 1) {
                     this.tryEnterDoor();
                 }
             }
@@ -1407,8 +1533,10 @@ export class Game {
         let period = profile.period;
         let warning = profile.warning;
         let duration = profile.duration;
-        const decay = profile.decay ?? BASE_FIRE_DECAY;
+        let decay = profile.decay ?? BASE_FIRE_DECAY;
         let heatSpeed = profile.heatSpeed * globalHeat;
+        let forcedPhaseSeed = null;
+        let skipWarningClamp = false;
         const bridgeTiming = profile.bridgeUniqueTiming ?
             GATE_BRIDGE_TIMINGS[statue.bridgeIndex % GATE_BRIDGE_TIMINGS.length] :
             null;
@@ -1435,17 +1563,35 @@ export class Game {
             }
         }
 
-        warning = clamp(warning, 3.2, Math.max(3.2, period - duration - decay - 1.0));
+        if (profile.bankSprintFire && statue.fireIndex === 0) {
+            const safeGap = profile.bankSprintGap ?? BASE_FIRE_DECAY;
+            period = profile.bankSprintPeriod ?? 6.0;
+            warning = 0.0;
+            duration = Math.max(0.2, period - safeGap);
+            decay = safeGap;
+            forcedPhaseSeed = 0.0;
+            skipWarningClamp = true;
+        } else if (profile.bankSprintFire && statue.fireIndex === 1) {
+            period = profile.period;
+            warning = profile.warning;
+            duration = profile.duration;
+            decay = profile.decay ?? BASE_FIRE_DECAY;
+            forcedPhaseSeed = 0.0;
+        }
 
-        let phaseSeed = positiveModulo(statue.phaseRatio * period, period);
-        if (profile.runningWave) {
+        if (!skipWarningClamp) {
+            warning = clamp(warning, 3.2, Math.max(3.2, period - duration - decay - 1.0));
+        }
+
+        let phaseSeed = forcedPhaseSeed ?? positiveModulo(statue.phaseRatio * period, period);
+        if (forcedPhaseSeed === null && profile.runningWave) {
             phaseSeed = this.getRunningWavePhaseSeed(statue, period, warning, duration, profile.postFireBreak ?? decay);
-        } else if (profile.pairedStoneTiming) {
+        } else if (forcedPhaseSeed === null && profile.pairedStoneTiming) {
             phaseSeed = this.getPairedStonePhaseSeed(statue, period, warning);
-        } else if (profile.gateOffset) {
+        } else if (forcedPhaseSeed === null && profile.gateOffset) {
             phaseSeed = this.getGatePhaseSeed(statue, period, warning);
         }
-        if (bridgeTiming) phaseSeed = positiveModulo(phaseSeed + bridgeTiming.phase, period);
+        if (bridgeTiming && forcedPhaseSeed === null) phaseSeed = positiveModulo(phaseSeed + bridgeTiming.phase, period);
 
         const rawPhase = this.elapsed * heatSpeed + phaseSeed + statue.heatOffset;
         const phase = positiveModulo(rawPhase, period);
@@ -1650,6 +1796,7 @@ export class Game {
             const isGroupHint = this.groupHintDoors.has(bridgeIndex);
             const isFinal = this.currentLevel === 5;
             const isCorrect = this.correctDoors.has(bridgeIndex);
+            const isCorrectFound = this.foundCorrectDoors.has(bridgeIndex);
             const pulse = Math.sin(this.elapsed * 3 + bridgeIndex);
 
             door.slab.position.y = door.slabBaseY;
@@ -1666,6 +1813,15 @@ export class Game {
                 door.ringMat.emissiveIntensity = 0.34;
                 door.slabMat.emissive.setHex(0x07141a);
                 door.slabMat.emissiveIntensity = 0.12;
+            } else if (isCorrectFound) {
+                door.slab.position.y = door.slabBaseY + 0.04;
+                door.slabMat.opacity = 0.92;
+                door.ring.scale.setScalar(1.03);
+                door.ringMat.color.setHex(0xd7bf77);
+                door.ringMat.emissive.setHex(0x5a3b0c);
+                door.ringMat.emissiveIntensity = 0.52 + Math.sin(this.elapsed * 4 + bridgeIndex) * 0.08;
+                door.slabMat.emissive.setHex(0x201205);
+                door.slabMat.emissiveIntensity = 0.22;
             } else if (isGroupHint) {
                 door.ring.scale.setScalar(1.04 + Math.sin(this.elapsed * 8) * 0.015);
                 door.ringMat.color.setHex(0xffd37a);
@@ -1684,9 +1840,11 @@ export class Game {
             let symbolOpacity = isCorrect ? 0.08 + pulse * 0.025 : 0.025;
             if (isGroupHint) symbolOpacity = 0.36 + Math.sin(this.elapsed * 8 + bridgeIndex) * 0.08;
             if (isFalseKnown) symbolOpacity = 0.34;
+            if (isCorrectFound) symbolOpacity = 0.42 + Math.sin(this.elapsed * 4 + bridgeIndex) * 0.04;
             if (isFinal) symbolOpacity = isCorrect ? 0.48 + pulse * 0.08 : 0.13;
+            if (isFinal && isCorrectFound) symbolOpacity = 0.54 + Math.sin(this.elapsed * 4 + bridgeIndex) * 0.05;
             door.symbolMat.opacity = Math.max(0, symbolOpacity);
-            door.symbolMat.color.setHex(isFalseKnown ? 0x5ea0b6 : (isCorrect ? 0xffd88a : 0x745048));
+            door.symbolMat.color.setHex(isFalseKnown ? 0x5ea0b6 : (isCorrectFound ? 0xffe0a0 : (isCorrect ? 0xffd88a : 0x745048)));
         }
     }
 
@@ -1800,10 +1958,11 @@ export class Game {
             routeMemory: Boolean(profile.routeMemory),
             routeReturnMode: this.routeReturnMode,
             openPassages: this.openPassages.size,
-            bankedCount: this.bankedMoves.size,
+            bankedCount: profile.bank ? (this.bankRun?.answers.length || 0) : this.bankedMoves.size,
             bankLimit: this.getBankLimit(),
             revealedFalse: this.revealedFalseDoors.size,
             correctDoors: this.correctDoors.size,
+            foundCorrect: this.foundCorrectDoors.size,
             groupHintCount: this.groupHintDoors.size,
             altarReady: this.isAtBonusAltar() && !this.bonusAltar.used,
             finalTrial: profile.finalDoorTrial,

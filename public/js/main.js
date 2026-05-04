@@ -391,7 +391,7 @@ const ui = {
         this.hud.innerHTML =
             `<div class="hud-row"><b>Режим ${data.level}</b> ${data.modeName} <span>${data.modeShort}</span></div>` +
             `<div class="hud-row">Мост <b>${data.bridge}/${data.bridges}</b> - ${tileLabel} - ${prepared}</div>` +
-            `<div class="hud-row dim">Помечено ложных дверей: <b>${data.revealedFalse}/6</b> - ${route || bank}</div>` +
+            `<div class="hud-row dim">Верные двери: <b>${data.foundCorrect}/${data.correctDoors}</b> - ложные: <b>${data.revealedFalse}/6</b> - ${route || bank}</div>` +
             `<div class="hud-row dim">${altar} ${final} ${heat} ${wave}</div>`;
     },
 
