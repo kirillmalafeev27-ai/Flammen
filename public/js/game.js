@@ -932,16 +932,14 @@ export class Game {
     onCorrectTacticalAnswer(fast) {
         const notes = [];
         this.correctAnswerStreak += 1;
-        if (this.revealFalseDoors(1, null) > 0) {
-            notes.push('Одна ложная дверь раскрылась.');
-        }
         if (fast) {
-            this.highlightDoorGroup();
-            notes.push('Группа из трёх дверей дала знак.');
-        }
-        if (this.correctAnswerStreak >= 2) {
             if (this.revealFalseDoors(1, null) > 0) {
-                notes.push('Серия раскрыла ещё одну ложную дверь.');
+                notes.push('Быстрый ответ пометил одну ложную дверь.');
+            }
+        }
+        if (this.correctAnswerStreak >= 3) {
+            if (this.revealFalseDoors(1, null) > 0) {
+                notes.push('Серия из трёх ответов пометила ещё одну ложную дверь.');
             }
             this.correctAnswerStreak = 0;
         }
@@ -978,10 +976,11 @@ export class Game {
 
         const correctCount = this.altarAnswers.filter(Boolean).length;
         this.questionsCorrect += correctCount;
-        if (correctCount > 0) {
-            this.revealFalseDoors(correctCount, correctCount === 2 ?
-                'Алтарь раскрыл две ложные двери.' :
-                'Алтарь раскрыл одну ложную дверь.');
+        if (correctCount === 2) {
+            this.revealFalseDoors(2, 'Алтарь раскрыл две ложные двери.');
+        } else if (correctCount === 1) {
+            this.heatCurrentStatue(0.35);
+            this.ui.showMessage('Алтарь принял один ответ, но подсказку не дал. Ближайшая голова слегка нагрелась.', 2400);
         } else {
             this.heatCurrentStatue(0.8);
             this.ui.showMessage('Алтарь промолчал. Ошибка дала жар ближайшей голове.', 2200);
@@ -1474,14 +1473,14 @@ export class Game {
             door.symbol.rotation.z = bridgeIndex * 0.42;
 
             if (isFalseKnown) {
-                door.slab.position.y = door.slabBaseY - 0.62;
-                door.slabMat.opacity = 0.42;
-                door.ring.scale.setScalar(0.92);
-                door.ringMat.color.setHex(0x4b6571);
+                door.slab.position.y = door.slabBaseY - 0.12;
+                door.slabMat.opacity = 0.78;
+                door.ring.scale.setScalar(0.97);
+                door.ringMat.color.setHex(0x557985);
                 door.ringMat.emissive.setHex(0x10222b);
-                door.ringMat.emissiveIntensity = 0.42;
+                door.ringMat.emissiveIntensity = 0.34;
                 door.slabMat.emissive.setHex(0x07141a);
-                door.slabMat.emissiveIntensity = 0.18;
+                door.slabMat.emissiveIntensity = 0.12;
             } else if (isGroupHint) {
                 door.ring.scale.setScalar(1.04 + Math.sin(this.elapsed * 8) * 0.015);
                 door.ringMat.color.setHex(0xffd37a);
@@ -1499,7 +1498,7 @@ export class Game {
 
             let symbolOpacity = isCorrect ? 0.08 + pulse * 0.025 : 0.025;
             if (isGroupHint) symbolOpacity = 0.36 + Math.sin(this.elapsed * 8 + bridgeIndex) * 0.08;
-            if (isFalseKnown) symbolOpacity = 0.22;
+            if (isFalseKnown) symbolOpacity = 0.34;
             if (isFinal) symbolOpacity = isCorrect ? 0.48 + pulse * 0.08 : 0.13;
             door.symbolMat.opacity = Math.max(0, symbolOpacity);
             door.symbolMat.color.setHex(isFalseKnown ? 0x5ea0b6 : (isCorrect ? 0xffd88a : 0x745048));
