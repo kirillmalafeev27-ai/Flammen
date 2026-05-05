@@ -147,9 +147,9 @@ const ui = {
         this.loadMenuState();
         this.populateMenu();
         this.startButton.addEventListener('click', () => this.requestStart());
-        this.peekButton.addEventListener('click', () => game.peekTimers());
-        this.pauseButton?.addEventListener('click', () => game.pauseGame());
-        this.answerConfirmButton?.addEventListener('click', () => game.confirmAnswer());
+        this.bindElementAction(this.peekButton, () => game.peekTimers());
+        this.bindElementAction(this.pauseButton, () => game.pauseGame());
+        this.bindElementAction(this.answerConfirmButton, () => game.confirmAnswer());
         this.bindMobileControls();
         document.querySelector('#to-step2-btn').addEventListener('click', () => this.showStep(2));
         document.querySelector('#back-to-step1').addEventListener('click', () => this.showStep(1));
@@ -450,6 +450,25 @@ const ui = {
         this.overlay.style.display = 'none';
     },
 
+    bindElementAction(button, action) {
+        if (!button) return;
+        let lastRun = 0;
+        const run = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const now = performance.now();
+            if (now - lastRun < 180) return;
+            lastRun = now;
+            action();
+        };
+        button.addEventListener('pointerup', run);
+        button.addEventListener('click', run);
+    },
+
+    bindButtonAction(root, selector, action) {
+        this.bindElementAction(root.querySelector(selector), action);
+    },
+
     showPause(targetGame) {
         this.overlay.innerHTML =
             `<div class="pause-shell">` +
@@ -459,12 +478,14 @@ const ui = {
             `<div class="pause-actions">` +
             `<button id="resume-btn" class="btn-primary" type="button">ПРОДОЛЖИТЬ</button>` +
             `<button id="diary-btn" class="btn-secondary" type="button">ДНЕВНИК</button>` +
+            `<button id="menu-btn" class="btn-secondary" type="button">ГЛАВНОЕ МЕНЮ</button>` +
             `</div>` +
             `<div class="hint">Esc тоже продолжает игру.</div>` +
             `</div>`;
         this.overlay.style.display = 'flex';
-        this.overlay.querySelector('#resume-btn').addEventListener('click', () => targetGame.resumeGame());
-        this.overlay.querySelector('#diary-btn').addEventListener('click', () => this.showDiary(targetGame));
+        this.bindButtonAction(this.overlay, '#resume-btn', () => targetGame.resumeGame());
+        this.bindButtonAction(this.overlay, '#diary-btn', () => this.showDiary(targetGame));
+        this.bindButtonAction(this.overlay, '#menu-btn', () => targetGame.returnToMainMenu());
     },
 
     showDiary(targetGame) {
@@ -489,8 +510,8 @@ const ui = {
             `</div>` +
             `</div>`;
         this.overlay.style.display = 'flex';
-        this.overlay.querySelector('#diary-back-btn').addEventListener('click', () => this.showPause(targetGame));
-        this.overlay.querySelector('#diary-resume-btn').addEventListener('click', () => targetGame.resumeGame());
+        this.bindButtonAction(this.overlay, '#diary-back-btn', () => this.showPause(targetGame));
+        this.bindButtonAction(this.overlay, '#diary-resume-btn', () => targetGame.resumeGame());
     },
 
     showOutcome(state, targetGame) {
@@ -513,8 +534,8 @@ const ui = {
             `<div class="hint desktop-only">Клавиатура: <b>R</b> или <b>Enter</b>.</div>` +
             `</div>`;
         this.overlay.style.display = 'flex';
-        this.overlay.querySelector('#outcome-restart-btn').addEventListener('click', () => targetGame.restart());
-        this.overlay.querySelector('#outcome-diary-btn').addEventListener('click', () => this.showDiary(targetGame));
+        this.bindButtonAction(this.overlay, '#outcome-restart-btn', () => targetGame.restart());
+        this.bindButtonAction(this.overlay, '#outcome-diary-btn', () => this.showDiary(targetGame));
     },
 
     showMessage(text, duration = 1800) {

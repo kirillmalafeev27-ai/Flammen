@@ -941,7 +941,45 @@ export class Game {
     resumeGame() {
         if (this.state !== STATE.PAUSED) return;
         this.state = STATE.PLAYING;
+        this.lookDragging = false;
+        this.touchLookPointerId = null;
         this.ui.hideOverlay();
+        this.renderer.domElement.focus();
+        this.clock.getDelta();
+    }
+
+    returnToMainMenu() {
+        this.state = STATE.INTRO;
+        this.lookDragging = false;
+        this.touchLookPointerId = null;
+        this.answerSlowHeld = false;
+        this.currentQuestion = null;
+        this.questionLoading = false;
+        this.questionRequestToken = null;
+        this.bankRun = null;
+        this.queuedBankMoves = [];
+        this.moveAnim = null;
+        this.fireWaveUntil = 0;
+        this.globalHeatUntil = 0;
+        this.peekUntil = 0;
+        this.peekHeatUntil = 0;
+        this.peekHeatStatue = null;
+
+        for (const statue of this.statues) {
+            this.setStatueFlame(statue, false);
+            statue.eyeLight.visible = false;
+            statue.eyeLight.intensity = 0;
+            statue.coal.visible = false;
+            statue.coalMat.opacity = 0.04;
+            statue.isFireActive = false;
+        }
+
+        this.releasePointerLock();
+        this.ui.hideOverlay();
+        this.ui.hideQuestion();
+        this.ui.hidePeek();
+        this.ui.showStep(1);
+        this.ui.showIntro();
         this.clock.getDelta();
     }
 
