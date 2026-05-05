@@ -43,8 +43,6 @@ const TOUCH_LOOK_Y_MULTIPLIER = 2.35;
 const MAX_CAMERA_PITCH = Math.PI * 0.42;
 const MOVE_DOT_THRESHOLD = 0.35;
 const START_GRACE = 1.0;
-const ANSWER_MARKER_SPEED = 0.86;
-const ANSWER_MARKER_SLOW = 0.46;
 const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
 const PEEK_HEAT_ACCEL = 0.45;
@@ -247,9 +245,6 @@ export class Game {
         this.queuedBankMoves = [];
         this.openPassages = new Set();
         this.routeReturnMode = false;
-        this.answerSlowHeld = false;
-        this.answerMarkerPosition = 0;
-        this.answerMarkerIndex = 0;
         this.correctAnswerStreak = 0;
         this.questionsAnswered = 0;
         this.questionsCorrect = 0;
@@ -654,11 +649,7 @@ export class Game {
             }
 
             if (this.currentQuestion) {
-                if (e.code === 'Enter') {
-                    this.confirmAnswer();
-                } else {
-                    this.tryCancelQuestionByRetreat(e.code);
-                }
+                this.tryCancelQuestionByRetreat(e.code);
                 return;
             }
 
@@ -923,7 +914,7 @@ export class Game {
         this.currentQuestion = null;
         this.questionLoading = false;
         this.questionRequestToken = null;
-        this.answerSlowHeld = false;
+        this.ui.hideQuestionLoading();
         this.ui.hideQuestion();
         this.ui.showMessage(message, 1800);
     }
@@ -931,7 +922,6 @@ export class Game {
     pauseGame() {
         if (this.state !== STATE.PLAYING) return;
         this.state = STATE.PAUSED;
-        this.answerSlowHeld = false;
         this.lookDragging = false;
         this.releasePointerLock();
         this.ui.setQuestionSlow(false);
@@ -952,7 +942,6 @@ export class Game {
         this.state = STATE.INTRO;
         this.lookDragging = false;
         this.touchLookPointerId = null;
-        this.answerSlowHeld = false;
         this.currentQuestion = null;
         this.questionLoading = false;
         this.questionRequestToken = null;
@@ -1179,23 +1168,40 @@ export class Game {
         this.questionLoading = true;
         const token = {};
         this.questionRequestToken = token;
-        this.ui.showMessage('Генерирую вопрос...', 1200);
-        const question = await this.questionBank.nextQuestion(this.getQuestionSlotForDetails(details));
+        this.ui.showQuestionLoading();
+        this.ui.update(this);
+        let question;
+        try {
+            question = await this.questionBank.nextQuestion(this.getQuestionSlotForDetails(details));
+        } catch (error) {
+            if (this.questionRequestToken === token) {
+                this.questionLoading = false;
+                this.questionRequestToken = null;
+                this.ui.hideQuestionLoading();
+                this.ui.update(this);
+                this.ui.showMessage('Не удалось сгенерировать вопрос. Попробуйте шаг ещё раз.', 2400);
+            }
+            return;
+        }
         if (this.state !== STATE.PLAYING || this.questionRequestToken !== token) {
+            if (this.questionRequestToken === token) {
+                this.questionLoading = false;
+                this.questionRequestToken = null;
+                this.ui.hideQuestionLoading();
+                this.ui.update(this);
+            }
             return;
         }
         this.questionLoading = false;
         this.questionRequestToken = null;
-        this.answerMarkerPosition = 0;
-        this.answerMarkerIndex = 0;
-        this.answerSlowHeld = false;
+        this.ui.hideQuestionLoading();
         this.currentQuestion = {
             ...details,
             question,
-            startedAt: this.elapsed,
-            markerIndex: 0
+            startedAt: this.elapsed
         };
         this.ui.showQuestion(this.currentQuestion, this);
+        this.ui.update(this);
     }
 
     getQuestionSlotForDetails(details) {
@@ -1212,20 +1218,18 @@ export class Game {
     }
 
     setAnswerSlow(on) {
-        if (!this.currentQuestion) return;
-        this.answerSlowHeld = on;
-        this.ui.setQuestionSlow(on);
+        // The answer slider was removed; this method remains as a harmless compatibility hook.
     }
 
-    confirmAnswer() {
+    confirmAnswer(selectedIndex = null) {
         if (!this.currentQuestion) return;
 
         const current = this.currentQuestion;
-        const selected = this.answerMarkerIndex;
+        const selected = Number.isInteger(selectedIndex) ? selectedIndex : null;
+        if (selected === null || selected < 0 || selected >= current.question.options.length) return;
         const correct = selected === current.question.correctIndex;
         const fast = this.elapsed - current.startedAt <= FAST_ANSWER_SECONDS;
         this.currentQuestion = null;
-        this.answerSlowHeld = false;
         this.questionsAnswered += 1;
         this.recordDiaryAnswer(current);
         this.ui.hideQuestion();
@@ -1260,7 +1264,7 @@ export class Game {
             }
         } else {
             this.questionBank.returnQuestion(current.question);
-            this.onWrongTacticalAnswer('Неверно. Ход не случился, статуя греется быстрее.');
+            this.onWrongTacticalAnswer('Неверно. Ход не случился, все головы греются быстрее.');
         }
 
         this.ui.update(this);
@@ -1310,6 +1314,7 @@ export class Game {
         const answers = this.bankRun.answers.slice(0, batchSize);
         const path = this.bankRun.path.slice(0, batchSize);
         const correctCount = answers.filter((answer) => answer.correct).length;
+        const wrongCount = batchSize - correctCount;
         const notes = [];
 
         for (const answer of answers) {
@@ -1319,6 +1324,9 @@ export class Game {
         }
 
         this.bankRun = null;
+        if (wrongCount > 0) {
+            this.heatAllStatues(0.28 * wrongCount, 3.8);
+        }
 
         if (correctCount > 0) {
             const note = notes.length ? ` ${notes.join(' ')}` : '';
@@ -1357,7 +1365,7 @@ export class Game {
 
     onWrongTacticalAnswer(message) {
         this.correctAnswerStreak = 0;
-        this.heatCurrentStatue(0.5);
+        this.heatAllStatues(0.5, 5.5);
         this.ui.showMessage(message, 2200);
     }
 
@@ -1388,11 +1396,11 @@ export class Game {
         if (correctCount === 2) {
             this.revealFalseDoors(2, 'Алтарь раскрыл две ложные двери.');
         } else if (correctCount === 1) {
-            this.heatCurrentStatue(0.35);
-            this.ui.showMessage('Алтарь принял один ответ, но подсказку не дал. Ближайшая голова слегка нагрелась.', 2400);
+            this.heatAllStatues(0.28, 3.8);
+            this.ui.showMessage('Алтарь принял один ответ, но подсказку не дал. Все головы слегка ускорились.', 2400);
         } else {
-            this.heatCurrentStatue(0.8);
-            this.ui.showMessage('Алтарь промолчал. Ошибка дала жар ближайшей голове.', 2200);
+            this.heatAllStatues(0.65, 5.5);
+            this.ui.showMessage('Алтарь промолчал. Ошибки ускорили жар всех голов.', 2200);
         }
         this.ui.update(this);
     }
@@ -1479,7 +1487,6 @@ export class Game {
         this.openPassages.clear();
         this.routeReturnMode = false;
         this.currentQuestion = null;
-        this.answerSlowHeld = false;
         this.startGraceUntil = START_GRACE;
         // Question pools intentionally survive level transitions; only changed setup settings reset them.
 
@@ -1501,7 +1508,7 @@ export class Game {
         if (profile.falseHeats) return 'Не каждый тлеющий взгляд станет струей огня.';
         if (profile.routeMemory) return 'Вопрос открывает конкретный переход. Уже открытые камни можно проходить свободно.';
         if (profile.gateOffset) return 'Иногда верный ход нужно держать до окна между двумя головами.';
-        return 'Базовый ритм: Enter фиксирует ответ, правильный ответ заряжает свободный ход.';
+        return 'Базовый ритм: клик по варианту заряжает свободный ход.';
     }
 
     getBankLimit() {
@@ -1629,9 +1636,12 @@ export class Game {
     update() {
         const dt = Math.min(this.clock.getDelta(), 0.05);
         if (this.state === STATE.PAUSED) return;
+        if (this.questionLoading) {
+            this.updateCamera(0);
+            return;
+        }
         this.elapsed += dt;
 
-        this.updateQuestion(dt);
         this.updateTimedIntel();
         this.applyHeldHeat(dt);
 
@@ -1679,16 +1689,6 @@ export class Game {
         this.updateAltarVisual(dt);
     }
 
-    updateQuestion(dt) {
-        if (!this.currentQuestion) return;
-        const optionCount = this.currentQuestion.question.options.length;
-        const speed = ANSWER_MARKER_SPEED * (this.answerSlowHeld ? ANSWER_MARKER_SLOW : 1);
-        this.answerMarkerPosition = (this.answerMarkerPosition + dt * speed) % optionCount;
-        this.answerMarkerIndex = Math.floor(this.answerMarkerPosition);
-        this.currentQuestion.markerIndex = this.answerMarkerIndex;
-        this.ui.updateQuestionMarker(this.answerMarkerIndex, this.answerMarkerPosition % 1, this.answerSlowHeld);
-    }
-
     updateTimedIntel() {
         if (this.groupHintUntil && this.elapsed > this.groupHintUntil) {
             this.groupHintUntil = 0;
@@ -1725,7 +1725,6 @@ export class Game {
 
     applyHeldHeat(dt) {
         let heat = 0;
-        if (this.answerSlowHeld) heat += dt * 0.2;
         if (this.peekHeatUntil && this.elapsed < this.peekHeatUntil) heat += dt * PEEK_HEAT_ACCEL;
         if (heat <= 0) return;
         this.heatCurrentStatue(heat, this.peekHeatStatue);
@@ -2151,6 +2150,15 @@ export class Game {
         if (target) target.heatOffset += amount;
     }
 
+    heatAllStatues(amount, duration = 0) {
+        for (const statue of this.statues) {
+            statue.heatOffset += amount;
+        }
+        if (duration > 0) {
+            this.globalHeatUntil = Math.max(this.globalHeatUntil, this.elapsed + duration);
+        }
+    }
+
     getLevelProfile() {
         return LEVELS[this.currentLevel] || LEVELS[1];
     }
@@ -2172,6 +2180,7 @@ export class Game {
             tile: this.playerTile,
             tiles: this.bridges[0].tiles.length,
             inQuestion: Boolean(this.currentQuestion),
+            questionLoading: this.questionLoading,
             readyMoves: this.readyMoves,
             routeMemory: Boolean(profile.routeMemory),
             routeReturnMode: this.routeReturnMode,

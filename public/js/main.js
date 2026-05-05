@@ -129,7 +129,6 @@ const ui = {
     grammarPicker: document.querySelector('#grammar-picker'),
     peekButton: document.querySelector('#peek-btn'),
     pauseButton: document.querySelector('#pause-btn'),
-    answerConfirmButton: document.querySelector('#answer-confirm-btn'),
     mobileControls: document.querySelector('#mobile-controls'),
     messageTimer: 0,
     ready: false,
@@ -149,30 +148,11 @@ const ui = {
         this.startButton.addEventListener('click', () => this.requestStart());
         this.bindElementAction(this.peekButton, () => game.peekTimers());
         this.bindElementAction(this.pauseButton, () => game.pauseGame());
-        this.bindElementAction(this.answerConfirmButton, () => game.confirmAnswer());
         this.bindMobileControls();
         document.querySelector('#to-step2-btn').addEventListener('click', () => this.showStep(2));
         document.querySelector('#back-to-step1').addEventListener('click', () => this.showStep(1));
         document.querySelector('#back-to-step2').addEventListener('click', () => this.showStep(2));
         document.querySelector('#back-to-step3').addEventListener('click', () => this.showStep(3));
-
-        this.questionPanel.addEventListener('pointerdown', (event) => {
-            if (event.button !== 0 || !game.currentQuestion) return;
-            if (event.target.closest('button, input, select, textarea, a')) return;
-            game.setAnswerSlow(true);
-            if (event.pointerType !== 'touch') event.preventDefault();
-        });
-
-        this.questionPanel.addEventListener('pointerup', (event) => {
-            if (!game.currentQuestion) return;
-            if (event.target.closest('button, input, select, textarea, a')) return;
-            game.setAnswerSlow(false);
-            if (event.pointerType !== 'touch') event.preventDefault();
-        });
-
-        window.addEventListener('pointerup', () => {
-            if (game.currentQuestion) game.setAnswerSlow(false);
-        });
 
         this.playerName.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
@@ -190,10 +170,7 @@ const ui = {
             if (!button || !game) return;
             event.preventDefault();
 
-            if (game.currentQuestion) {
-                if (button.dataset.mobileAction === 'confirm') game.confirmAnswer();
-                return;
-            }
+            if (game.currentQuestion) return;
 
             const move = button.dataset.move;
             if (move === 'forward') game.tryMoveRelative(1, 0);
@@ -450,6 +427,22 @@ const ui = {
         this.overlay.style.display = 'none';
     },
 
+    showQuestionLoading() {
+        this.overlay.innerHTML =
+            `<div class="pause-shell loading-shell">` +
+            `<div class="menu-kicker">Пауза</div>` +
+            `<h2 class="pause-title">Генерирую вопрос</h2>` +
+            `<p class="pause-subtitle">Огонь и тайминги остановлены, пока готовится новая плашка.</p>` +
+            `</div>`;
+        this.overlay.style.display = 'flex';
+    },
+
+    hideQuestionLoading() {
+        if (this.overlay.querySelector('.loading-shell')) {
+            this.hideOverlay();
+        }
+    },
+
     bindElementAction(button, action) {
         if (!button) return;
         let lastRun = 0;
@@ -553,7 +546,8 @@ const ui = {
         const tileLabel = data.tile === 0 ? 'периметр' :
             data.tile === data.tiles - 1 ? 'дверь' :
             `клетка ${data.tile}`;
-        const prepared = data.inQuestion ? 'Enter фиксирует ответ' :
+        const prepared = data.inQuestion ? 'выберите ответ кликом' :
+            data.questionLoading ? 'пауза: генерация вопроса' :
             data.readyMoves ? `готовых ходов: ${data.readyMoves}` : 'выберите направление';
         const route = data.routeMemory ? `${data.routeReturnMode ? 'обратный шлюз' : 'прямой шлюз'}: ${data.openPassages}` : '';
         const bank = data.bankedCount ? `банк: ${data.bankedCount}/${data.bankLimit}` : 'банк пуст';
@@ -583,8 +577,8 @@ const ui = {
         this.questionTopic.textContent = `${question.topic} - ${question.level} - ${question.lexicalTopic}`;
         this.questionText.textContent = `${question.text} ${question.display}`;
         this.questionFeedback.textContent = current.hiddenResult
-            ? 'Результат скрыт. Удерживайте мышь для замедления, Enter фиксирует вариант под маркером.'
-            : 'Удерживайте мышь для замедления. Enter фиксирует ответ; правильный ответ заряжает свободный ход.';
+            ? 'Результат скрыт. Выберите вариант кликом или тапом.'
+            : 'Выберите вариант кликом или тапом. Правильный ответ заряжает свободный ход.';
 
         this.questionOptions.innerHTML = '';
         this.optionNodes = question.options.map((option, index) => {
@@ -592,21 +586,18 @@ const ui = {
             button.className = 'option-btn';
             button.type = 'button';
 
-            const heat = document.createElement('span');
-            heat.className = 'option-heat';
-
             const label = document.createElement('span');
             label.className = 'option-label';
             label.textContent = `${index + 1}. ${option}`;
 
-            button.append(heat, label);
+            button.append(label);
+            this.bindElementAction(button, () => game.confirmAnswer(index));
             this.questionOptions.appendChild(button);
-            return { button, heat };
+            return { button };
         });
 
         this.questionPanel.classList.remove('hidden', 'slowed');
         document.documentElement.classList.add('question-open');
-        this.updateQuestionMarker(0, 0, false);
     },
 
     hideQuestion() {
@@ -617,16 +608,11 @@ const ui = {
     },
 
     setQuestionSlow(on) {
-        this.questionPanel.classList.toggle('slowed', on);
+        this.questionPanel.classList.toggle('slowed', false);
     },
 
     updateQuestionMarker(index, progress, slowed) {
-        this.questionPanel.classList.toggle('slowed', slowed);
-        this.optionNodes.forEach((node, itemIndex) => {
-            const active = itemIndex === index;
-            node.button.classList.toggle('armed', active);
-            node.heat.style.transform = active ? `scaleX(${0.2 + progress * 0.8})` : 'scaleX(0)';
-        });
+        this.questionPanel.classList.toggle('slowed', false);
     },
 
     showPeek(rows) {
