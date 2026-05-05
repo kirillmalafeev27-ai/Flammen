@@ -95,14 +95,10 @@
             border: 1px solid rgba(255, 178, 92, 0.26); border-radius: 8px;
             text-align: left; overflow: hidden; cursor: pointer;
         }
-        .option-btn.armed {
-            border-color: rgba(255, 214, 129, 0.95);
-            box-shadow: inset 0 0 0 1px rgba(255, 108, 31, 0.42), 0 0 22px rgba(255, 95, 31, 0.24);
-        }
-        .option-heat {
-            position: absolute; inset: 0; transform-origin: left center; transform: scaleX(0);
-            background: linear-gradient(90deg, rgba(255, 67, 23, 0.34), rgba(255, 186, 86, 0.16));
-            pointer-events: none;
+        .option-btn:hover, .option-btn:focus-visible {
+            border-color: rgba(255, 214, 129, 0.82);
+            box-shadow: inset 0 0 0 1px rgba(255, 108, 31, 0.24), 0 0 18px rgba(255, 95, 31, 0.16);
+            outline: none;
         }
         .option-label { position: relative; z-index: 1; display: block; overflow-wrap: anywhere; }
         #question-feedback {
@@ -131,12 +127,6 @@
             background: rgba(8, 12, 16, 0.76); color: #ffd189; cursor: pointer;
             font-weight: 800; display: none;
         }
-        #answer-confirm-btn {
-            display: none; width: 100%; min-height: 38px; margin-top: 8px;
-            border-radius: 8px; border: 1px solid rgba(156, 255, 217, 0.52);
-            background: rgba(12, 44, 38, 0.88); color: #d9fff4; font-weight: 800;
-            letter-spacing: 0.08em; cursor: pointer;
-        }
         #mobile-controls {
             position: absolute; left: 10px; bottom: 10px; z-index: 6;
             display: none; grid-template-columns: repeat(3, 48px); grid-template-rows: repeat(3, 48px);
@@ -147,7 +137,7 @@
             background: rgba(5, 8, 12, 0.52); color: #ffe7c2; font-weight: 800;
             box-shadow: 0 8px 22px rgba(0,0,0,0.24); cursor: pointer;
         }
-        #mobile-controls button:active, #peek-btn:active, #pause-btn:active, #answer-confirm-btn:active {
+        #mobile-controls button:active, #peek-btn:active, #pause-btn:active {
             transform: scale(0.96); background: rgba(28, 40, 42, 0.7);
         }
         #mobile-controls [data-move="forward"] { grid-column: 2; grid-row: 1; }
@@ -284,6 +274,7 @@
             box-shadow: 0 22px 80px rgba(0,0,0,0.58), inset 0 0 0 1px rgba(255, 210, 135, 0.06);
         }
         .diary-shell { width: min(860px, calc(100vw - 28px)); max-height: calc(100vh - 42px); display: flex; flex-direction: column; }
+        .loading-shell { text-align: center; }
         .pause-title { margin: 0 0 8px; color: #ffd189; font-size: 26px; }
         .pause-subtitle { margin: 0 0 16px; color: #bfae9c; line-height: 1.45; }
         .pause-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
@@ -337,7 +328,6 @@
             #question-options { grid-template-columns: 1fr; }
             .option-btn { min-height: 34px; padding: 7px 8px; font-size: 12px; }
             #question-feedback { display: none; }
-            #answer-confirm-btn { display: block; min-height: 46px; }
             .setup-progress, .level-buttons, .difficulty-buttons, .lexical-grid, .ritual-slots { grid-template-columns: 1fr; }
             .setup-step { min-height: 0; }
             .menu-shell, .pause-shell, .diary-shell {
@@ -406,7 +396,6 @@
         </div>
         <p id="question-text"></p>
         <div id="question-options"></div>
-        <button id="answer-confirm-btn" type="button">OK</button>
         <div id="question-feedback"></div>
     </div>
 
