@@ -46,7 +46,6 @@ const START_GRACE = 1.0;
 const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
 const PEEK_HEAT_ACCEL = 0.45;
-const FLAME_ACTIVE_RADIUS_SQ = mobileRuntime ? 36 : 144;
 const STATUE_VISIBLE_RADIUS_SQ = mobileRuntime ? 196 : Infinity;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
@@ -214,6 +213,9 @@ export class Game {
         this.bridges = [];
         this.statues = [];
         this.doors = [];
+        this.innerDoorGuards = new Map();
+        this.innerDoorAnchorBridge = null;
+        this.suppressDoorAutoEnterOnce = false;
         this.correctDoors = new Set();
         this.foundCorrectDoors = new Set();
         this.revealedFalseDoors = new Set();
@@ -425,6 +427,7 @@ export class Game {
                 this.statues.push(statue);
                 b.fireStatues.push(statue);
             }
+            b.baseFireCount = b.fireStatues.length;
 
             const doorPos = b.tiles[b.tiles.length - 1].clone();
             const door = this.makeDoor(doorPos, b);
@@ -480,6 +483,47 @@ export class Game {
             position: statuePos, facing: facingDir, tilePosition: tilePos.clone(),
             heatOffset: 0, isFireActive: false, afterFireSafeUntil: 0, visualState: 'cold'
         };
+    }
+
+    spawnInnerDoorGuard(bridgeIndex, sourceBridgeIndex) {
+        const bridge = this.bridges[bridgeIndex];
+        if (!bridge || this.innerDoorGuards.has(bridgeIndex)) return null;
+
+        const doorTile = bridge.tiles.length - 1;
+        const side = positiveModulo(bridgeIndex - sourceBridgeIndex, cfg.bridges) === 1 ? 1 : -1;
+        const statue = this.makeStatue(bridge.tiles[doorTile], bridge, side);
+        statue.fireTile = doorTile;
+        statue.fireIndex = bridge.fireStatues.length;
+        statue.phaseRatio = 0;
+        statue.bridgeIndex = bridge.index;
+        statue.falsePhase = (bridge.index * 1.91 + 4.7) % 7.4;
+        statue.innerDoorGuard = true;
+        statue.heatOffset = -this.elapsed;
+        statue.sourceBridgeIndex = sourceBridgeIndex;
+
+        this.statues.push(statue);
+        bridge.fireStatues.push(statue);
+        bridge.innerDoorGuard = statue;
+        this.innerDoorGuards.set(bridgeIndex, statue);
+        return statue;
+    }
+
+    clearInnerDoorGuards() {
+        if (!this.innerDoorGuards.size) return;
+        for (const statue of this.innerDoorGuards.values()) {
+            this.setStatueFlame(statue, false);
+            const bridge = this.bridges[statue.bridgeIndex];
+            if (bridge) {
+                bridge.fireStatues = bridge.fireStatues.filter((item) => item !== statue);
+                if (bridge.innerDoorGuard === statue) bridge.innerDoorGuard = null;
+            }
+            this.scene.remove(statue.group);
+            this.scene.remove(statue.fireOrigin);
+            this.scene.remove(statue.eyeLight);
+            this.scene.remove(statue.coal);
+        }
+        this.statues = this.statues.filter((statue) => !statue.innerDoorGuard);
+        this.innerDoorGuards.clear();
     }
 
     ensureStatueFlame(statue) {
@@ -749,6 +793,9 @@ export class Game {
         this.perimeterQuestionBridge = null;
         this.openPassages.clear();
         this.routeReturnMode = false;
+        this.clearInnerDoorGuards();
+        this.innerDoorAnchorBridge = null;
+        this.suppressDoorAutoEnterOnce = false;
         this.currentQuestion = null;
         this.questionLoading = false;
         this.questionRequestToken = null;
@@ -814,6 +861,8 @@ export class Game {
         this.queuedBankMoves = [];
         this.perimeterQuestionBridge = null;
         this.readyMoves = 0;
+        this.innerDoorAnchorBridge = null;
+        this.suppressDoorAutoEnterOnce = false;
         this.releasePointerLock();
     }
 
@@ -953,6 +1002,9 @@ export class Game {
         this.peekUntil = 0;
         this.peekHeatUntil = 0;
         this.peekHeatStatue = null;
+        this.clearInnerDoorGuards();
+        this.innerDoorAnchorBridge = null;
+        this.suppressDoorAutoEnterOnce = false;
 
         for (const statue of this.statues) {
             this.setStatueFlame(statue, false);
@@ -1007,6 +1059,10 @@ export class Game {
             consider((this.playerBridge - 1 + cfg.bridges) % cfg.bridges, 0);
             consider((this.playerBridge + 1) % cfg.bridges, 0);
         }
+        if (this.playerTile === lastTile) {
+            consider((this.playerBridge - 1 + cfg.bridges) % cfg.bridges, lastTile);
+            consider((this.playerBridge + 1) % cfg.bridges, lastTile);
+        }
 
         if (bestBridge !== this.playerBridge || bestTile !== this.playerTile) {
             return { bridge: bestBridge, tile: bestTile };
@@ -1016,6 +1072,15 @@ export class Game {
 
     requestMove(toBridge, toTile) {
         if (this.questionLoading) return;
+        if (this.isInnerDoorStep(this.playerBridge, this.playerTile, toBridge, toTile)) {
+            this.handleInnerDoorStep(toBridge, toTile);
+            return;
+        }
+        if (this.playerTile === cfg.tiles - 1 && toTile !== cfg.tiles - 1) {
+            this.innerDoorAnchorBridge = null;
+            this.suppressDoorAutoEnterOnce = false;
+        }
+
         const questionSource = this.getQuestionSourceForMove(toBridge, toTile);
 
         if (this.getLevelProfile().routeMemory) {
@@ -1061,6 +1126,33 @@ export class Game {
             targetTile: toTile,
             hiddenResult: false
         });
+    }
+
+    isInnerDoorStep(fromBridge, fromTile, toBridge, toTile) {
+        const doorTile = cfg.tiles - 1;
+        if (fromTile !== doorTile || toTile !== doorTile || fromBridge === toBridge) return false;
+        const clockwise = positiveModulo(toBridge - fromBridge, cfg.bridges);
+        return clockwise === 1 || clockwise === cfg.bridges - 1;
+    }
+
+    handleInnerDoorStep(toBridge, toTile) {
+        const sourceBridge = this.playerBridge;
+        if (!Number.isInteger(this.innerDoorAnchorBridge)) {
+            this.innerDoorAnchorBridge = sourceBridge;
+        }
+
+        const returningToAnchor = toBridge === this.innerDoorAnchorBridge;
+        if (!returningToAnchor) {
+            this.spawnInnerDoorGuard(toBridge, sourceBridge);
+        }
+
+        this.suppressDoorAutoEnterOnce = true;
+        this.beginMove(toBridge, toTile);
+        this.ui.showMessage(returningToAnchor ?
+            'Возврат к исходной двери свободен: новая голова там не появляется.' :
+            'Внутренний периметр открыт. У целевой двери проснулась новая голова.',
+            2200);
+        this.ui.update(this);
     }
 
     getQuestionSourceForMove(toBridge, toTile) {
@@ -1486,6 +1578,9 @@ export class Game {
         this.perimeterQuestionBridge = null;
         this.openPassages.clear();
         this.routeReturnMode = false;
+        this.clearInnerDoorGuards();
+        this.innerDoorAnchorBridge = null;
+        this.suppressDoorAutoEnterOnce = false;
         this.currentQuestion = null;
         this.startGraceUntil = START_GRACE;
         // Question pools intentionally survive level transitions; only changed setup settings reset them.
@@ -1668,7 +1763,11 @@ export class Game {
                     const next = this.queuedBankMoves.shift();
                     this.beginMove(next.bridge, next.tile);
                 } else if (this.playerTile === cfg.tiles - 1) {
-                    this.tryEnterDoor();
+                    if (this.suppressDoorAutoEnterOnce) {
+                        this.suppressDoorAutoEnterOnce = false;
+                    } else {
+                        this.tryEnterDoor();
+                    }
                 }
             }
         }
@@ -1738,6 +1837,8 @@ export class Game {
         let heatSpeed = profile.heatSpeed * globalHeat;
         let forcedPhaseSeed = null;
         let skipWarningClamp = false;
+        let runningWaveSafeGap = profile.postFireBreak ?? BASE_FIRE_DECAY;
+        const innerDoorGuardCycle = Boolean(statue.innerDoorGuard);
         const bridgeTiming = profile.bridgeUniqueTiming ?
             GATE_BRIDGE_TIMINGS[statue.bridgeIndex % GATE_BRIDGE_TIMINGS.length] :
             null;
@@ -1756,14 +1857,6 @@ export class Game {
             heatSpeed *= 1.04;
         }
 
-        if (profile.runningWave) {
-            const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].fireStatues.length);
-            const safeGap = profile.postFireBreak ?? decay;
-            if (fireCount >= 3) {
-                period = (duration + safeGap) * fireCount;
-            }
-        }
-
         if (profile.bankSprintFire && statue.fireIndex === 0) {
             const safeGap = profile.bankSprintGap ?? BASE_FIRE_DECAY;
             period = profile.bankSprintPeriod ?? 6.0;
@@ -1780,19 +1873,39 @@ export class Game {
             forcedPhaseSeed = 0.0;
         }
 
+        if (innerDoorGuardCycle) {
+            period = 6.0;
+            warning = 2.2;
+            duration = 1.6;
+            decay = 1.0;
+            heatSpeed = 1.0;
+            forcedPhaseSeed = 0.0;
+            skipWarningClamp = true;
+        }
+
         if (!skipWarningClamp) {
             warning = clamp(warning, 3.2, Math.max(3.2, period - duration - decay - 1.0));
         }
 
-        const timeScale = this.getDifficultyTimeScale();
+        const timeScale = innerDoorGuardCycle ? 1.0 : this.getDifficultyTimeScale();
         period *= timeScale;
         warning *= timeScale;
         duration *= timeScale;
         decay *= timeScale;
 
+        if (profile.runningWave && !innerDoorGuardCycle) {
+            const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].baseFireCount || this.bridges[statue.bridgeIndex].fireStatues.length);
+            // Keep the visual handoff between statues readable and browser-independent:
+            // one exact safe second after each jet, including the wrap from nearest back to farthest.
+            runningWaveSafeGap = profile.postFireBreak ?? BASE_FIRE_DECAY;
+            period = (duration + runningWaveSafeGap) * fireCount;
+            decay = runningWaveSafeGap;
+            warning = clamp(warning, 0.2, Math.max(0.2, period - duration - runningWaveSafeGap));
+        }
+
         let phaseSeed = forcedPhaseSeed ?? positiveModulo(statue.phaseRatio * period, period);
         if (forcedPhaseSeed === null && profile.runningWave) {
-            phaseSeed = this.getRunningWavePhaseSeed(statue, period, warning, duration, profile.postFireBreak ?? decay);
+            phaseSeed = this.getRunningWavePhaseSeed(statue, period, warning, duration, runningWaveSafeGap);
         } else if (forcedPhaseSeed === null && profile.pairedStoneTiming) {
             phaseSeed = this.getPairedStonePhaseSeed(statue, period, warning);
         } else if (forcedPhaseSeed === null && profile.gateOffset) {
@@ -1814,17 +1927,16 @@ export class Game {
         out.fireEnd = warning + duration;
         out.decayEnd = warning + duration + decay;
         out.cycleIndex = cycleIndex;
-        out.falseCycle = this.isFalseFireCycle(statue, profile, cycleIndex);
+        out.falseCycle = innerDoorGuardCycle ? false : this.isFalseFireCycle(statue, profile, cycleIndex);
         return out;
     }
 
     getRunningWavePhaseSeed(statue, period, warning, duration, safeGap) {
-        const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].fireStatues.length);
+        const fireCount = Math.max(1, this.bridges[statue.bridgeIndex].baseFireCount || this.bridges[statue.bridgeIndex].fireStatues.length);
         const minStep = duration + safeGap;
-        const step = Math.max(minStep, period / Math.max(1, fireCount + 1));
+        const step = minStep;
         const targetSeconds = (fireCount - 1 - statue.fireIndex) * step;
-        const bridgeDrift = statue.bridgeIndex * 0.18;
-        return positiveModulo(warning - targetSeconds + bridgeDrift, period);
+        return positiveModulo(warning - targetSeconds, period);
     }
 
     getGatePhaseSeed(statue, period, warning) {
@@ -1873,7 +1985,7 @@ export class Game {
 
         for (const s of this.statues) {
             const distSq = s.position.distanceToSquared(playerPos);
-            s.group.visible = distSq < STATUE_VISIBLE_RADIUS_SQ;
+            s.group.visible = s.bridgeIndex === currentBridgeIndex || distSq < STATUE_VISIBLE_RADIUS_SQ;
 
             if (s.bridgeIndex !== currentBridgeIndex) {
                 this.setStatueFlame(s, false);
@@ -1882,20 +1994,6 @@ export class Game {
                 s.coal.visible = false;
                 s.coalMat.opacity = 0.04;
                 s.coal.scale.setScalar(0.62);
-                s.isFireActive = false;
-                s.afterFireSafeUntil = 0;
-                s.visualState = 'cold';
-                continue;
-            }
-
-            const inActiveRange = distSq < FLAME_ACTIVE_RADIUS_SQ;
-
-            if (!inActiveRange) {
-                this.setStatueFlame(s, false);
-                s.eyeLight.visible = false;
-                s.eyeLight.intensity = 0;
-                s.coal.visible = false;
-                s.coalMat.opacity = 0.04;
                 s.isFireActive = false;
                 s.afterFireSafeUntil = 0;
                 s.visualState = 'cold';
