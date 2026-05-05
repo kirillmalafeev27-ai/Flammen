@@ -6,6 +6,10 @@ import { QuestionBank } from './questions.js';
 
 const params = new URLSearchParams(location.search);
 const qualityParam = params.get('quality') || 'auto';
+const iosRuntime = qualityParam !== 'high' && (
+    /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+);
 const mobileRuntime = qualityParam !== 'high' && (
     qualityParam === 'low' ||
     /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
@@ -21,7 +25,7 @@ const cfg = {
     bridgeY: parseFloat(params.get('y') || 'NaN'),
     moaiHeight: parseFloat(params.get('moaiH') || '1.6'),
     fireScale: parseFloat(params.get('fireScale') || '0.18'),
-    releaseMul: parseFloat(params.get('release') || (mobileRuntime ? '3' : '20')),
+    releaseMul: parseFloat(params.get('release') || (mobileRuntime ? (iosRuntime ? '2.5' : '3') : '20')),
     sideOffset: parseFloat(params.get('side') || '1.0'),
     fireMouthY: parseFloat(params.get('mouthY') || '1.1'),
     debug: params.has('debug')
@@ -34,6 +38,8 @@ const BASE_FIRE_DURATION = 1.8;
 const BASE_FIRE_DECAY = 1.0;
 const CAMERA_EYE_HEIGHT = 1.35;
 const LOOK_SENSITIVITY = 0.0022;
+const TOUCH_LOOK_X_MULTIPLIER = 3.2;
+const TOUCH_LOOK_Y_MULTIPLIER = 2.35;
 const MAX_CAMERA_PITCH = Math.PI * 0.42;
 const MOVE_DOT_THRESHOLD = 0.35;
 const START_GRACE = 1.0;
@@ -228,6 +234,9 @@ export class Game {
         this.cameraYaw = 0;
         this.cameraPitch = 0;
         this.lookDragging = false;
+        this.touchLookPointerId = null;
+        this.touchLookLastX = 0;
+        this.touchLookLastY = 0;
         this.startGraceUntil = 0;
 
         this.currentQuestion = null;
@@ -675,14 +684,46 @@ export class Game {
         });
         window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
 
+        const stopLookDrag = (pointerId = null) => {
+            if (pointerId !== null && this.touchLookPointerId !== null && pointerId !== this.touchLookPointerId) return;
+            this.lookDragging = false;
+            this.touchLookPointerId = null;
+        };
+
         canvas.addEventListener('pointerdown', (e) => {
             if (this.state !== STATE.PLAYING || this.currentQuestion || this.questionLoading) return;
             this.lookDragging = true;
+            this.touchLookPointerId = e.pointerType === 'mouse' ? null : e.pointerId;
+            this.touchLookLastX = e.clientX;
+            this.touchLookLastY = e.clientY;
             canvas.focus();
-            this.tryPointerLock();
+            if (e.pointerType === 'mouse') {
+                this.tryPointerLock();
+            } else if (canvas.setPointerCapture) {
+                try { canvas.setPointerCapture(e.pointerId); } catch (error) {}
+            }
             e.preventDefault();
         });
-        window.addEventListener('pointerup', () => { this.lookDragging = false; });
+
+        canvas.addEventListener('pointermove', (e) => {
+            if (!this.lookDragging || e.pointerType === 'mouse') return;
+            if (this.touchLookPointerId !== null && e.pointerId !== this.touchLookPointerId) return;
+            if (this.state !== STATE.PLAYING || this.currentQuestion) {
+                stopLookDrag(e.pointerId);
+                return;
+            }
+            const dx = e.clientX - this.touchLookLastX;
+            const dy = e.clientY - this.touchLookLastY;
+            this.touchLookLastX = e.clientX;
+            this.touchLookLastY = e.clientY;
+            this.rotateCamera(dx * TOUCH_LOOK_X_MULTIPLIER, dy * TOUCH_LOOK_Y_MULTIPLIER);
+            e.preventDefault();
+        });
+
+        window.addEventListener('pointerup', (e) => { stopLookDrag(e.pointerId); });
+        window.addEventListener('pointercancel', (e) => { stopLookDrag(e.pointerId); });
+        canvas.addEventListener('lostpointercapture', () => { stopLookDrag(); });
+
         window.addEventListener('mousemove', (e) => {
             if (this.state !== STATE.PLAYING || this.currentQuestion) return;
             if (document.pointerLockElement === canvas || this.lookDragging) {
@@ -804,6 +845,7 @@ export class Game {
     }
 
     releasePointerLock() {
+        this.touchLookPointerId = null;
         if (document.pointerLockElement === this.renderer.domElement && document.exitPointerLock) {
             document.exitPointerLock();
         }

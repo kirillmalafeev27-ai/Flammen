@@ -41,10 +41,17 @@ function detectMobileRuntime() {
     return Boolean(mobileAgent || (coarsePointer && touchDevice));
 }
 
+function detectIosRuntime() {
+    return /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
 const mobileRuntime = qualityParam !== 'high' && (qualityParam === 'low' || detectMobileRuntime());
+const iosRuntime = qualityParam !== 'high' && detectIosRuntime();
 const lowPowerDevice = qualityParam === 'low' || (qualityParam === 'auto' && mobileRuntime);
-const pixelRatioCap = qualityParam === 'high' ? 1.5 : (lowPowerDevice ? 0.65 : 1.5);
+const pixelRatioCap = qualityParam === 'high' ? 1.5 : (lowPowerDevice ? (iosRuntime ? 0.6 : 0.65) : 1.5);
 document.documentElement.classList.toggle('mobile-runtime', mobileRuntime);
+document.documentElement.classList.toggle('ios-runtime', iosRuntime);
 document.documentElement.classList.toggle('low-power-runtime', lowPowerDevice);
 
 const renderWidth = () => Math.floor(window.visualViewport?.width || window.innerWidth);
@@ -59,6 +66,12 @@ scene.fog = new THREE.Fog(0x07050b, 30, 90);
 
 const renderer = new THREE.WebGLRenderer({
     antialias: !lowPowerDevice,
+    alpha: false,
+    stencil: false,
+    depth: true,
+    premultipliedAlpha: false,
+    preserveDrawingBuffer: false,
+    precision: lowPowerDevice ? 'mediump' : 'highp',
     powerPreference: 'high-performance'
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
@@ -489,10 +502,19 @@ const ui = {
         const [title, color, subtitle] = titles[state] || ['-', '#ffffff', ''];
         const data = targetGame.getHudData();
         this.overlay.innerHTML =
+            `<div class="pause-shell outcome-shell">` +
             `<div class="outcome" style="color:${color}">${title}</div>` +
             `<div class="outcome-sub">${subtitle}</div>` +
-            `<div class="hint">Ответы: <b>${data.questionsCorrect}/${data.questionsAnswered}</b>. Нажмите <b>R</b> или <b>Enter</b>, чтобы повторить текущий режим.</div>`;
+            `<div class="hint">Ответы: <b>${data.questionsCorrect}/${data.questionsAnswered}</b>.</div>` +
+            `<div class="pause-actions outcome-actions">` +
+            `<button id="outcome-restart-btn" class="btn-primary" type="button">ПОВТОРИТЬ</button>` +
+            `<button id="outcome-diary-btn" class="btn-secondary" type="button">ДНЕВНИК</button>` +
+            `</div>` +
+            `<div class="hint desktop-only">Клавиатура: <b>R</b> или <b>Enter</b>.</div>` +
+            `</div>`;
         this.overlay.style.display = 'flex';
+        this.overlay.querySelector('#outcome-restart-btn').addEventListener('click', () => targetGame.restart());
+        this.overlay.querySelector('#outcome-diary-btn').addEventListener('click', () => this.showDiary(targetGame));
     },
 
     showMessage(text, duration = 1800) {
