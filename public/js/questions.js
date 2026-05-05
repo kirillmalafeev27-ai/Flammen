@@ -344,24 +344,39 @@ export class QuestionBank {
         this.questionPool = Object.create(null);
         this.fetching = Object.create(null);
         this.usedDisplays = Object.create(null);
+        this.poolSignature = '';
     }
 
     configure(settings = {}) {
-        this.level = settings.langLevel || this.level;
-        this.lexicalTopic = settings.lexicalTopic || this.lexicalTopic;
-        this.fallbackCursor = 0;
-        this.grammarCursor = 0;
-        this.selectedSlots = (settings.grammarSlots || [])
+        const nextLevel = settings.langLevel || this.level;
+        const nextLexicalTopic = settings.lexicalTopic || this.lexicalTopic;
+        const nextSlots = (settings.grammarSlots || [])
             .filter((slot) => slot && slot.grammarTopic)
             .map((slot) => ({
                 bridgeIndex: Number.isInteger(slot.bridgeIndex) ? slot.bridgeIndex : null,
                 grammarTopic: slot.grammarTopic,
                 isWortstellung: Boolean(slot.isWortstellung)
             }));
-        this.fallbackPool = shuffle(QUESTION_POOL);
-        this.questionPool = Object.create(null);
-        this.fetching = Object.create(null);
-        this.usedDisplays = Object.create(null);
+        const nextSignature = JSON.stringify({
+            level: nextLevel,
+            lexicalTopic: nextLexicalTopic,
+            slots: nextSlots
+        });
+        const samePoolConfig = nextSignature === this.poolSignature;
+
+        this.level = nextLevel;
+        this.lexicalTopic = nextLexicalTopic;
+        this.fallbackCursor = 0;
+        this.grammarCursor = 0;
+        this.selectedSlots = nextSlots;
+        this.poolSignature = nextSignature;
+
+        if (!samePoolConfig) {
+            this.fallbackPool = shuffle(QUESTION_POOL);
+            this.questionPool = Object.create(null);
+            this.fetching = Object.create(null);
+            this.usedDisplays = Object.create(null);
+        }
     }
 
     hasBridgePool(bridgeIndex) {
@@ -395,10 +410,6 @@ export class QuestionBank {
         if (!pool || pool.length === 0) return null;
 
         const raw = pool.shift();
-        if (pool.length <= 2) {
-            this._ensurePool(slot);
-        }
-
         const formatted = this._formatQuestion(raw, slot);
         const used = this.usedDisplays[key] || new Set();
         used.add(raw.display);
@@ -406,15 +417,28 @@ export class QuestionBank {
         return formatted;
     }
 
+    returnQuestion(question) {
+        if (!question || !question.generated || !question._poolKey || !question._rawQuestion) return;
+        const pool = this.questionPool[question._poolKey] || [];
+        const display = question._rawQuestion.display;
+        if (!pool.some((item) => item && item.display === display)) {
+            pool.push(question._rawQuestion);
+        }
+        this.questionPool[question._poolKey] = pool;
+
+        const used = this.usedDisplays[question._poolKey];
+        if (used) used.delete(display);
+    }
+
     async _ensurePool(slot) {
         const key = this._slotKey(slot);
-        if (this.fetching[key]) {
-            return this.fetching[key];
-        }
-
         const pool = this.questionPool[key];
         if (pool && pool.length > 0) {
             return pool;
+        }
+
+        if (this.fetching[key]) {
+            return this.fetching[key];
         }
 
         this.fetching[key] = this._fetchQuestions(slot)
@@ -474,7 +498,9 @@ export class QuestionBank {
             lexicalTopic: this.lexicalTopic,
             options,
             correctIndex: options.indexOf(correctAnswer),
-            generated: true
+            generated: true,
+            _poolKey: this._slotKey(slot),
+            _rawQuestion: rawQuestion
         };
     }
 
@@ -538,7 +564,7 @@ export class QuestionBank {
 
     _slotKey(slot) {
         const bridge = Number.isInteger(slot.bridgeIndex) ? slot.bridgeIndex : 'cycle';
-        return `${bridge}:${slot.grammarTopic}:${slot.isWortstellung ? 'w' : 'g'}`;
+        return `${this.poolSignature}:${bridge}:${slot.grammarTopic}:${slot.isWortstellung ? 'w' : 'g'}`;
     }
 
     _isValidQuestion(question) {

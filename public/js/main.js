@@ -20,13 +20,35 @@ function isWortstellungTopic(grammarTopic) {
     return typeof grammarTopic === 'string' && grammarTopic.includes('Wortstellung');
 }
 
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (char) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[char]));
+}
+
 const rootElement = document.querySelector('#root');
 
-const renderWidth = () => Math.floor(window.innerWidth);
-const renderHeight = () => Math.floor(window.innerHeight);
 const qualityParam = new URLSearchParams(location.search).get('quality') || 'auto';
-const lowPowerDevice = qualityParam === 'low';
-const pixelRatioCap = qualityParam === 'low' ? 1.0 : 1.5;
+
+function detectMobileRuntime() {
+    const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches;
+    const touchDevice = navigator.maxTouchPoints > 1;
+    const mobileAgent = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    return Boolean(mobileAgent || (coarsePointer && touchDevice));
+}
+
+const mobileRuntime = qualityParam !== 'high' && (qualityParam === 'low' || detectMobileRuntime());
+const lowPowerDevice = qualityParam === 'low' || (qualityParam === 'auto' && mobileRuntime);
+const pixelRatioCap = qualityParam === 'high' ? 1.5 : (lowPowerDevice ? 0.65 : 1.5);
+document.documentElement.classList.toggle('mobile-runtime', mobileRuntime);
+document.documentElement.classList.toggle('low-power-runtime', lowPowerDevice);
+
+const renderWidth = () => Math.floor(window.visualViewport?.width || window.innerWidth);
+const renderHeight = () => Math.floor(window.visualViewport?.height || window.innerHeight);
 
 const camera = new THREE.PerspectiveCamera(60, renderWidth() / renderHeight(), 0.1, 500);
 camera.position.set(20, 18, 20);
@@ -54,13 +76,17 @@ const fill = new THREE.DirectionalLight(0x554466, 0.3);
 fill.position.set(-15, 20, -10);
 scene.add(fill);
 
-window.addEventListener('resize', () => {
+function resizeRenderer() {
     const w = renderWidth();
     const h = renderHeight();
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
     renderer.setSize(w, h);
-});
+}
+
+window.addEventListener('resize', resizeRenderer);
+window.visualViewport?.addEventListener('resize', resizeRenderer);
 
 let game;
 
@@ -89,6 +115,9 @@ const ui = {
     ritualSlots: document.querySelector('#ritual-slots'),
     grammarPicker: document.querySelector('#grammar-picker'),
     peekButton: document.querySelector('#peek-btn'),
+    pauseButton: document.querySelector('#pause-btn'),
+    answerConfirmButton: document.querySelector('#answer-confirm-btn'),
+    mobileControls: document.querySelector('#mobile-controls'),
     messageTimer: 0,
     ready: false,
     optionNodes: [],
@@ -106,6 +135,9 @@ const ui = {
         this.populateMenu();
         this.startButton.addEventListener('click', () => this.requestStart());
         this.peekButton.addEventListener('click', () => game.peekTimers());
+        this.pauseButton?.addEventListener('click', () => game.pauseGame());
+        this.answerConfirmButton?.addEventListener('click', () => game.confirmAnswer());
+        this.bindMobileControls();
         document.querySelector('#to-step2-btn').addEventListener('click', () => this.showStep(2));
         document.querySelector('#back-to-step1').addEventListener('click', () => this.showStep(1));
         document.querySelector('#back-to-step2').addEventListener('click', () => this.showStep(2));
@@ -113,14 +145,16 @@ const ui = {
 
         this.questionPanel.addEventListener('pointerdown', (event) => {
             if (event.button !== 0 || !game.currentQuestion) return;
+            if (event.target.closest('button, input, select, textarea, a')) return;
             game.setAnswerSlow(true);
-            event.preventDefault();
+            if (event.pointerType !== 'touch') event.preventDefault();
         });
 
         this.questionPanel.addEventListener('pointerup', (event) => {
             if (!game.currentQuestion) return;
+            if (event.target.closest('button, input, select, textarea, a')) return;
             game.setAnswerSlow(false);
-            event.preventDefault();
+            if (event.pointerType !== 'touch') event.preventDefault();
         });
 
         window.addEventListener('pointerup', () => {
@@ -134,6 +168,29 @@ const ui = {
             }
         });
         this.playerName.addEventListener('input', () => this.saveMenuState());
+    },
+
+    bindMobileControls() {
+        if (!this.mobileControls) return;
+        this.mobileControls.addEventListener('pointerdown', (event) => {
+            const button = event.target.closest('button');
+            if (!button || !game) return;
+            event.preventDefault();
+
+            if (game.currentQuestion) {
+                if (button.dataset.mobileAction === 'confirm') game.confirmAnswer();
+                return;
+            }
+
+            const move = button.dataset.move;
+            if (move === 'forward') game.tryMoveRelative(1, 0);
+            if (move === 'back') game.tryMoveRelative(-1, 0);
+            if (move === 'left') game.tryMoveRelative(0, -1);
+            if (move === 'right') game.tryMoveRelative(0, 1);
+            if (button.dataset.mobileAction === 'use') {
+                if (!game.tryEnterDoor()) game.tryActivateBonusAltar();
+            }
+        });
     },
 
     loadMenuState() {
@@ -380,6 +437,49 @@ const ui = {
         this.overlay.style.display = 'none';
     },
 
+    showPause(targetGame) {
+        this.overlay.innerHTML =
+            `<div class="pause-shell">` +
+            `<div class="menu-kicker">Пауза</div>` +
+            `<h2 class="pause-title">Огонь замер</h2>` +
+            `<p class="pause-subtitle">Можно открыть дневник уже отвеченных вопросов или вернуться в забег.</p>` +
+            `<div class="pause-actions">` +
+            `<button id="resume-btn" class="btn-primary" type="button">ПРОДОЛЖИТЬ</button>` +
+            `<button id="diary-btn" class="btn-secondary" type="button">ДНЕВНИК</button>` +
+            `</div>` +
+            `<div class="hint">Esc тоже продолжает игру.</div>` +
+            `</div>`;
+        this.overlay.style.display = 'flex';
+        this.overlay.querySelector('#resume-btn').addEventListener('click', () => targetGame.resumeGame());
+        this.overlay.querySelector('#diary-btn').addEventListener('click', () => this.showDiary(targetGame));
+    },
+
+    showDiary(targetGame) {
+        const entries = targetGame.getDiaryEntries();
+        const items = entries.length ? entries.map((entry, index) =>
+            `<article class="diary-entry">` +
+            `<div class="diary-meta">${index + 1}. ${escapeHtml(entry.context)}${entry.bridge ? ` - мост ${entry.bridge}` : ''} - ${escapeHtml(entry.topic)} - ${escapeHtml(entry.level)}</div>` +
+            `<div class="diary-text">${escapeHtml(entry.text)}</div>` +
+            `<div class="diary-display">${escapeHtml(entry.display || '—')}</div>` +
+            `</article>`
+        ).join('') : `<div class="diary-empty">Пока нет отвеченных вопросов.</div>`;
+
+        this.overlay.innerHTML =
+            `<div class="diary-shell">` +
+            `<div class="menu-kicker">Дневник</div>` +
+            `<h2 class="pause-title">Отвеченные вопросы</h2>` +
+            `<p class="pause-subtitle">Варианты и ключи скрыты. На месте выбранного слова остаётся прочерк.</p>` +
+            `<div class="diary-list">${items}</div>` +
+            `<div class="pause-actions">` +
+            `<button id="diary-back-btn" class="btn-secondary" type="button">НАЗАД</button>` +
+            `<button id="diary-resume-btn" class="btn-primary" type="button">ПРОДОЛЖИТЬ</button>` +
+            `</div>` +
+            `</div>`;
+        this.overlay.style.display = 'flex';
+        this.overlay.querySelector('#diary-back-btn').addEventListener('click', () => this.showPause(targetGame));
+        this.overlay.querySelector('#diary-resume-btn').addEventListener('click', () => targetGame.resumeGame());
+    },
+
     showOutcome(state, targetGame) {
         const titles = {
             won: ['ПУТЬ НАЙДЕН', '#ffd37a', 'Финальная дверь приняла риск.'],
@@ -462,12 +562,14 @@ const ui = {
         });
 
         this.questionPanel.classList.remove('hidden', 'slowed');
+        document.documentElement.classList.add('question-open');
         this.updateQuestionMarker(0, 0, false);
     },
 
     hideQuestion() {
         this.questionPanel.classList.add('hidden');
         this.questionPanel.classList.remove('slowed');
+        document.documentElement.classList.remove('question-open');
         this.optionNodes = [];
     },
 

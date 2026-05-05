@@ -5,6 +5,13 @@ import { buildFlamethrower } from './flamethrower.js';
 import { QuestionBank } from './questions.js';
 
 const params = new URLSearchParams(location.search);
+const qualityParam = params.get('quality') || 'auto';
+const mobileRuntime = qualityParam !== 'high' && (
+    qualityParam === 'low' ||
+    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+    (window.matchMedia?.('(pointer: coarse)').matches && navigator.maxTouchPoints > 1)
+);
+
 const cfg = {
     bridges: parseInt(params.get('bridges') || '8'),
     tiles: parseInt(params.get('tiles') || '6'),
@@ -14,7 +21,7 @@ const cfg = {
     bridgeY: parseFloat(params.get('y') || 'NaN'),
     moaiHeight: parseFloat(params.get('moaiH') || '1.6'),
     fireScale: parseFloat(params.get('fireScale') || '0.18'),
-    releaseMul: parseFloat(params.get('release') || '20'),
+    releaseMul: parseFloat(params.get('release') || (mobileRuntime ? '3' : '20')),
     sideOffset: parseFloat(params.get('side') || '1.0'),
     fireMouthY: parseFloat(params.get('mouthY') || '1.1'),
     debug: params.has('debug')
@@ -35,7 +42,8 @@ const ANSWER_MARKER_SLOW = 0.46;
 const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
 const PEEK_HEAT_ACCEL = 0.45;
-const FLAME_ACTIVE_RADIUS_SQ = 144;
+const FLAME_ACTIVE_RADIUS_SQ = mobileRuntime ? 36 : 144;
+const STATUE_VISIBLE_RADIUS_SQ = mobileRuntime ? 196 : Infinity;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
 const DIFFICULTY_TIME_SCALES = {
@@ -58,6 +66,7 @@ const GATE_BRIDGE_TIMINGS = [
 const STATE = {
     INTRO: 'intro',
     PLAYING: 'playing',
+    PAUSED: 'paused',
     BURNED: 'burned',
     WRONG_DOOR: 'wrong_door',
     WON: 'won'
@@ -190,6 +199,9 @@ export class Game {
         this.clock = new THREE.Clock();
         this.elapsed = 0;
         this.manager = new Photons.Manager();
+        this.hasParticleSystems = false;
+        this.activeFlameCount = 0;
+        this.particleTailUntil = 0;
         this.questionBank = new QuestionBank();
 
         this.state = STATE.INTRO;
@@ -210,6 +222,7 @@ export class Game {
         this.moveAnim = null;
         this.movesMade = 0;
         this.readyMoves = 0;
+        this.perimeterQuestionBridge = null;
 
         this.keys = {};
         this.cameraYaw = 0;
@@ -231,6 +244,7 @@ export class Game {
         this.correctAnswerStreak = 0;
         this.questionsAnswered = 0;
         this.questionsCorrect = 0;
+        this.diaryEntries = [];
         this.wrongDoorAttempts = 0;
 
         this.fireWaveUntil = 0;
@@ -477,13 +491,17 @@ export class Game {
         this.manager.addParticleSystem(flame.systems.baseFlame);
         this.manager.addParticleSystem(flame.systems.brightFlame);
         statue.flame = flame;
+        this.hasParticleSystems = true;
         return flame;
     }
 
     setStatueFlame(statue, firing) {
         if (!firing && !statue.flame) return;
         const flame = firing ? this.ensureStatueFlame(statue) : statue.flame;
-        if (flame && flame.isFiring() !== firing) flame.setFiring(firing);
+        if (flame && flame.isFiring() !== firing) {
+            flame.setFiring(firing);
+            this.particleTailUntil = Math.max(this.particleTailUntil, this.elapsed + (firing ? 0.6 : 2.4));
+        }
     }
 
     makeStatueMesh(position, facingDir) {
@@ -614,7 +632,17 @@ export class Game {
                 return;
             }
 
+            if (this.state === STATE.PAUSED) {
+                if (e.code === 'Escape') this.resumeGame();
+                return;
+            }
+
             if (this.state !== STATE.PLAYING) return;
+
+            if (e.code === 'Escape') {
+                this.pauseGame();
+                return;
+            }
 
             if (this.currentQuestion) {
                 if (e.code === 'Enter') {
@@ -677,6 +705,7 @@ export class Game {
         this.questionsCorrect = 0;
         this.correctAnswerStreak = 0;
         this.wrongDoorAttempts = 0;
+        if (!options.preserveDiary) this.diaryEntries = [];
         if (!preserveDoorIntel) {
             this.revealedFalseDoors.clear();
             this.foundCorrectDoors.clear();
@@ -685,6 +714,7 @@ export class Game {
         this.bankedMoves.clear();
         this.bankRun = null;
         this.queuedBankMoves = [];
+        this.perimeterQuestionBridge = null;
         this.openPassages.clear();
         this.routeReturnMode = false;
         this.currentQuestion = null;
@@ -733,7 +763,8 @@ export class Game {
         const repeatLevel = this.state === STATE.BURNED || this.state === STATE.WRONG_DOOR;
         this.startRun(this.settings, {
             startLevel: repeatLevel ? this.currentLevel : 1,
-            preserveDoorIntel: false
+            preserveDoorIntel: false,
+            preserveDiary: true
         });
     }
 
@@ -749,6 +780,7 @@ export class Game {
         this.bankedMoves.clear();
         this.bankRun = null;
         this.queuedBankMoves = [];
+        this.perimeterQuestionBridge = null;
         this.readyMoves = 0;
         this.releasePointerLock();
     }
@@ -756,7 +788,8 @@ export class Game {
     isGameplayKey(code) {
         return code === 'ArrowUp' || code === 'ArrowDown' || code === 'ArrowLeft' || code === 'ArrowRight' ||
             code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD' ||
-            code === 'KeyE' || code === 'Space' || code === 'Enter' || code === 'KeyR' || code === 'KeyF';
+            code === 'KeyE' || code === 'Space' || code === 'Enter' || code === 'KeyR' || code === 'KeyF' ||
+            code === 'Escape';
     }
 
     tryPointerLock() {
@@ -853,6 +886,23 @@ export class Game {
         this.ui.showMessage(message, 1800);
     }
 
+    pauseGame() {
+        if (this.state !== STATE.PLAYING) return;
+        this.state = STATE.PAUSED;
+        this.answerSlowHeld = false;
+        this.lookDragging = false;
+        this.releasePointerLock();
+        this.ui.setQuestionSlow(false);
+        this.ui.showPause(this);
+    }
+
+    resumeGame() {
+        if (this.state !== STATE.PAUSED) return;
+        this.state = STATE.PLAYING;
+        this.ui.hideOverlay();
+        this.clock.getDelta();
+    }
+
     tryMoveToward(direction) {
         const target = this.getMoveTargetToward(direction);
         if (target) this.requestMove(target.bridge, target.tile);
@@ -897,6 +947,7 @@ export class Game {
 
     requestMove(toBridge, toTile) {
         if (this.questionLoading) return;
+        const questionSource = this.getQuestionSourceForMove(toBridge, toTile);
 
         if (this.getLevelProfile().routeMemory) {
             if (this.isPassageOpen(this.playerBridge, this.playerTile, toBridge, toTile)) {
@@ -907,8 +958,8 @@ export class Game {
 
             this.openQuestion({
                 context: 'move',
-                sourceBridge: this.playerBridge,
-                sourceTile: this.playerTile,
+                sourceBridge: questionSource.bridge,
+                sourceTile: questionSource.tile,
                 fromBridge: this.playerBridge,
                 fromTile: this.playerTile,
                 targetBridge: toBridge,
@@ -929,21 +980,34 @@ export class Game {
         const mode = this.getLevelProfile();
 
         if (mode.bank) {
-            this.openBankQuestion(toBridge, toTile);
+            this.openBankQuestion(toBridge, toTile, questionSource);
             return;
         }
 
         this.openQuestion({
             context: 'move',
-            sourceBridge: this.playerBridge,
-            sourceTile: this.playerTile,
+            sourceBridge: questionSource.bridge,
+            sourceTile: questionSource.tile,
             targetBridge: toBridge,
             targetTile: toTile,
             hiddenResult: false
         });
     }
 
-    openBankQuestion(toBridge, toTile) {
+    getQuestionSourceForMove(toBridge, toTile) {
+        const perimeterSideStep = this.playerTile === 0 && toTile === 0 && toBridge !== this.playerBridge;
+        if (perimeterSideStep) {
+            if (!Number.isInteger(this.perimeterQuestionBridge)) {
+                this.perimeterQuestionBridge = this.playerBridge;
+            }
+            return { bridge: this.perimeterQuestionBridge, tile: 0 };
+        }
+
+        this.perimeterQuestionBridge = null;
+        return { bridge: this.playerBridge, tile: this.playerTile };
+    }
+
+    openBankQuestion(toBridge, toTile, questionSource = null) {
         if (!this.bankRun) {
             this.bankRun = this.createBankRun(toBridge, toTile);
         }
@@ -956,10 +1020,11 @@ export class Game {
         }
 
         this.bankRun.path.push(target);
+        const source = questionSource || this.getQuestionSourceForMove(toBridge, toTile);
         this.openQuestion({
             context: 'move',
-            sourceBridge: this.playerBridge,
-            sourceTile: this.playerTile,
+            sourceBridge: source.bridge,
+            sourceTile: source.tile,
             targetBridge: target.bridge,
             targetTile: target.tile,
             hiddenResult: true,
@@ -1056,11 +1121,7 @@ export class Game {
     getQuestionSlotForDetails(details) {
         if (!details || details.context !== 'move') return null;
         const sourceBridge = Number.isInteger(details.sourceBridge) ? details.sourceBridge : this.playerBridge;
-        const targetBridge = Number.isInteger(details.targetBridge) ? details.targetBridge : sourceBridge;
-        const sourceTile = Number.isInteger(details.sourceTile) ? details.sourceTile : this.playerTile;
-        const targetTile = Number.isInteger(details.targetTile) ? details.targetTile : sourceTile;
-        const lateralMove = sourceBridge !== targetBridge && sourceTile === 0 && targetTile === 0;
-        const bridgeIndex = lateralMove && !this.questionBank.hasBridgePool(sourceBridge) ? targetBridge : sourceBridge;
+        const bridgeIndex = sourceBridge;
         const slot = this.questionBank.slotForBridge(bridgeIndex);
         if (!slot || !slot.grammarTopic) return null;
         return {
@@ -1086,14 +1147,17 @@ export class Game {
         this.currentQuestion = null;
         this.answerSlowHeld = false;
         this.questionsAnswered += 1;
+        this.recordDiaryAnswer(current);
         this.ui.hideQuestion();
 
         if (current.context === 'altar') {
+            if (!correct) this.questionBank.returnQuestion(current.question);
             this.handleAltarAnswer(correct);
             return;
         }
 
         if (current.hiddenResult) {
+            if (!correct) this.questionBank.returnQuestion(current.question);
             this.handleBankAnswer(current, correct, fast);
             return;
         }
@@ -1115,10 +1179,38 @@ export class Game {
                 this.ui.showMessage(`${baseMessage}${note} Выберите направление.`, 2200);
             }
         } else {
+            this.questionBank.returnQuestion(current.question);
             this.onWrongTacticalAnswer('Неверно. Ход не случился, статуя греется быстрее.');
         }
 
         this.ui.update(this);
+    }
+
+    recordDiaryAnswer(current) {
+        const question = current?.question;
+        if (!question) return;
+
+        const display = String(question.display || '').replace(/_{2,}/g, '—');
+        const context = current.context === 'altar' ? 'Алтарь' :
+            current.hiddenResult ? 'Банк' :
+            current.routeUnlock ? 'Переход' :
+            'Ход';
+
+        this.diaryEntries.push({
+            id: `${this.elapsed}:${this.diaryEntries.length}`,
+            level: question.level,
+            topic: question.topic,
+            lexicalTopic: question.lexicalTopic,
+            text: question.text,
+            display,
+            context,
+            bridge: Number.isInteger(current.sourceBridge) ? current.sourceBridge + 1 :
+                Number.isInteger(current.targetBridge) ? current.targetBridge + 1 : null
+        });
+    }
+
+    getDiaryEntries() {
+        return this.diaryEntries.slice();
     }
 
     handleBankAnswer(current, correct, fast) {
@@ -1303,11 +1395,13 @@ export class Game {
         this.bankedMoves.clear();
         this.bankRun = null;
         this.queuedBankMoves = [];
+        this.perimeterQuestionBridge = null;
         this.openPassages.clear();
         this.routeReturnMode = false;
         this.currentQuestion = null;
         this.answerSlowHeld = false;
         this.startGraceUntil = START_GRACE;
+        // Question pools intentionally survive level transitions; only changed setup settings reset them.
 
         if (this.currentLevel === 5) {
             this.ensureFinalDoorIntel();
@@ -1435,6 +1529,7 @@ export class Game {
         this.questionRequestToken = null;
         this.bankRun = null;
         this.queuedBankMoves = [];
+        this.perimeterQuestionBridge = null;
         for (const statue of this.statues) {
             this.setStatueFlame(statue, false);
             statue.eyeLight.visible = false;
@@ -1453,6 +1548,7 @@ export class Game {
 
     update() {
         const dt = Math.min(this.clock.getDelta(), 0.05);
+        if (this.state === STATE.PAUSED) return;
         this.elapsed += dt;
 
         this.updateQuestion(dt);
@@ -1470,6 +1566,9 @@ export class Game {
                 this.playerTile = this.moveAnim.toTile;
                 this.moveAnim = null;
                 this.movesMade += 1;
+                if (this.playerTile !== 0) {
+                    this.perimeterQuestionBridge = null;
+                }
                 if (this.getLevelProfile().routeMemory && this.playerTile === cfg.tiles - 1 && !this.routeReturnMode) {
                     this.routeReturnMode = true;
                     this.ui.showMessage('Дверной конец достигнут. Обратный путь теперь открывается отдельными ответами.', 2600);
@@ -1487,7 +1586,9 @@ export class Game {
         this.updateStatues(dt);
         this.checkBurn();
         this.updateCamera(dt);
-        this.manager.update();
+        if (this.hasParticleSystems && (this.activeFlameCount > 0 || this.elapsed < this.particleTailUntil)) {
+            this.manager.update();
+        }
 
         if (this.playerHalo) {
             this.playerHalo.material.opacity = 0.5 + Math.sin(this.elapsed * 4) * 0.2;
@@ -1688,9 +1789,11 @@ export class Game {
         const profile = this.getLevelProfile();
         const fireWave = this.fireWaveUntil > this.elapsed;
         const globalHeat = this.globalHeatUntil > this.elapsed ? 1.22 : 1.0;
+        let activeFlameCount = 0;
 
         for (const s of this.statues) {
             const distSq = s.position.distanceToSquared(playerPos);
+            s.group.visible = distSq < STATUE_VISIBLE_RADIUS_SQ;
             const inActiveRange = distSq < FLAME_ACTIVE_RADIUS_SQ;
 
             if (!inActiveRange) {
@@ -1723,8 +1826,9 @@ export class Game {
             const isFalseHeat = !fireWave && (falseHeatWindow ||
                 (profile.falseHeats && !isFire && !isWarning && !isDecay && falsePhase < 1.25));
 
-            if (!isFire && isWarning && phase > warning * 0.7) this.ensureStatueFlame(s);
+            if (!mobileRuntime && !isFire && isWarning && phase > warning * 0.7) this.ensureStatueFlame(s);
             this.setStatueFlame(s, isFire);
+            if (isFire) activeFlameCount += 1;
 
             if (isFire) {
                 s.eyeLight.visible = true;
@@ -1788,6 +1892,7 @@ export class Game {
 
             s.isFireActive = isFire;
         }
+        this.activeFlameCount = activeFlameCount;
     }
 
     checkBurn() {
@@ -2031,6 +2136,8 @@ export class Game {
 
     render() {
         this.renderer.render(this.scene, this.camera);
-        this.manager.render(this.renderer, this.camera);
+        if (this.hasParticleSystems && (this.activeFlameCount > 0 || this.elapsed < this.particleTailUntil)) {
+            this.manager.render(this.renderer, this.camera);
+        }
     }
 }
