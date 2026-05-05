@@ -38,6 +38,11 @@ const PEEK_HEAT_ACCEL = 0.45;
 const FLAME_ACTIVE_RADIUS_SQ = 144;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
+const DIFFICULTY_TIME_SCALES = {
+    hard: 1.0,
+    medium: 1.75,
+    easy: 2.5
+};
 const GATE_BASE_N = 3.2;
 const GATE_BRIDGE_TIMINGS = [
     { period: 1.00, warning: -0.4, duration: 1.00, phase: 0.0, heatSpeed: 1.00 },
@@ -902,6 +907,8 @@ export class Game {
 
             this.openQuestion({
                 context: 'move',
+                sourceBridge: this.playerBridge,
+                sourceTile: this.playerTile,
                 fromBridge: this.playerBridge,
                 fromTile: this.playerTile,
                 targetBridge: toBridge,
@@ -926,7 +933,14 @@ export class Game {
             return;
         }
 
-        this.openQuestion({ context: 'move', targetBridge: toBridge, targetTile: toTile, hiddenResult: false });
+        this.openQuestion({
+            context: 'move',
+            sourceBridge: this.playerBridge,
+            sourceTile: this.playerTile,
+            targetBridge: toBridge,
+            targetTile: toTile,
+            hiddenResult: false
+        });
     }
 
     openBankQuestion(toBridge, toTile) {
@@ -944,6 +958,8 @@ export class Game {
         this.bankRun.path.push(target);
         this.openQuestion({
             context: 'move',
+            sourceBridge: this.playerBridge,
+            sourceTile: this.playerTile,
             targetBridge: target.bridge,
             targetTile: target.tile,
             hiddenResult: true,
@@ -1038,12 +1054,17 @@ export class Game {
     }
 
     getQuestionSlotForDetails(details) {
-        if (!details || details.context !== 'move' || !Number.isInteger(details.targetBridge)) return null;
-        const slots = this.settings.grammarSlots || [];
-        const slot = slots.length ? slots[details.targetBridge % slots.length] : null;
+        if (!details || details.context !== 'move') return null;
+        const sourceBridge = Number.isInteger(details.sourceBridge) ? details.sourceBridge : this.playerBridge;
+        const targetBridge = Number.isInteger(details.targetBridge) ? details.targetBridge : sourceBridge;
+        const sourceTile = Number.isInteger(details.sourceTile) ? details.sourceTile : this.playerTile;
+        const targetTile = Number.isInteger(details.targetTile) ? details.targetTile : sourceTile;
+        const lateralMove = sourceBridge !== targetBridge && sourceTile === 0 && targetTile === 0;
+        const bridgeIndex = lateralMove && !this.questionBank.hasBridgePool(sourceBridge) ? targetBridge : sourceBridge;
+        const slot = this.questionBank.slotForBridge(bridgeIndex);
         if (!slot || !slot.grammarTopic) return null;
         return {
-            bridgeIndex: details.targetBridge,
+            bridgeIndex,
             grammarTopic: slot.grammarTopic,
             isWortstellung: Boolean(slot.isWortstellung)
         };
@@ -1583,6 +1604,12 @@ export class Game {
             warning = clamp(warning, 3.2, Math.max(3.2, period - duration - decay - 1.0));
         }
 
+        const timeScale = this.getDifficultyTimeScale();
+        period *= timeScale;
+        warning *= timeScale;
+        duration *= timeScale;
+        decay *= timeScale;
+
         let phaseSeed = forcedPhaseSeed ?? positiveModulo(statue.phaseRatio * period, period);
         if (forcedPhaseSeed === null && profile.runningWave) {
             phaseSeed = this.getRunningWavePhaseSeed(statue, period, warning, duration, profile.postFireBreak ?? decay);
@@ -1591,7 +1618,7 @@ export class Game {
         } else if (forcedPhaseSeed === null && profile.gateOffset) {
             phaseSeed = this.getGatePhaseSeed(statue, period, warning);
         }
-        if (bridgeTiming && forcedPhaseSeed === null) phaseSeed = positiveModulo(phaseSeed + bridgeTiming.phase, period);
+        if (bridgeTiming && forcedPhaseSeed === null) phaseSeed = positiveModulo(phaseSeed + bridgeTiming.phase * timeScale, period);
 
         const rawPhase = this.elapsed * heatSpeed + phaseSeed + statue.heatOffset;
         const phase = positiveModulo(rawPhase, period);
@@ -1943,12 +1970,18 @@ export class Game {
         return LEVELS[this.currentLevel] || LEVELS[1];
     }
 
+    getDifficultyTimeScale() {
+        return DIFFICULTY_TIME_SCALES[this.settings.difficulty] || DIFFICULTY_TIME_SCALES.hard;
+    }
+
     getHudData() {
         const profile = this.getLevelProfile();
         return {
             level: this.currentLevel,
             modeName: profile.name,
             modeShort: profile.short,
+            difficulty: this.settings.difficulty || 'hard',
+            difficultyTimeScale: this.getDifficultyTimeScale(),
             bridge: this.playerBridge + 1,
             bridges: this.bridges.length,
             tile: this.playerTile,

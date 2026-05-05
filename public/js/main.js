@@ -4,6 +4,11 @@ import { LANGUAGE_LEVELS, LEXICAL_TOPICS, GRAMMAR_TOPICS } from './questions.js'
 
 const MENU_STATE_KEY = 'flammen_menu_state_v2';
 const BRIDGE_COUNT = 8;
+const DIFFICULTIES = [
+    { id: 'easy', title: 'Лёгкий', desc: 'времени x2.5' },
+    { id: 'medium', title: 'Средний', desc: 'времени x1.75' },
+    { id: 'hard', title: 'Трудный', desc: 'как сейчас' }
+];
 const RITUAL_SLOTS = Array.from({ length: BRIDGE_COUNT }, (_, index) => ({
     id: `bridge-${index + 1}`,
     title: `Мост ${index + 1}`,
@@ -79,6 +84,7 @@ const ui = {
     steps: Array.from(document.querySelectorAll('.setup-step')),
     progressSteps: Array.from(document.querySelectorAll('.progress-step')),
     levelButtons: document.querySelector('#level-buttons'),
+    difficultyButtons: document.querySelector('#difficulty-buttons'),
     lexicalGrid: document.querySelector('#lexical-grid'),
     ritualSlots: document.querySelector('#ritual-slots'),
     grammarPicker: document.querySelector('#grammar-picker'),
@@ -88,6 +94,7 @@ const ui = {
     optionNodes: [],
     selectedStep: 1,
     selectedLevel: null,
+    selectedDifficulty: 'hard',
     selectedLexical: null,
     selectedGrammar: null,
     selectedSlotIndex: null,
@@ -138,6 +145,9 @@ const ui = {
 
             const state = JSON.parse(raw);
             if (LANGUAGE_LEVELS.includes(state.selectedLevel)) this.selectedLevel = state.selectedLevel;
+            if (DIFFICULTIES.some((difficulty) => difficulty.id === state.selectedDifficulty)) {
+                this.selectedDifficulty = state.selectedDifficulty;
+            }
             if (LEXICAL_TOPICS.includes(state.selectedLexical)) this.selectedLexical = state.selectedLexical;
             if (Array.isArray(state.slotAssignments)) {
                 this.slotAssignments = Array.from({ length: RITUAL_SLOTS.length }, (_, index) => {
@@ -159,6 +169,7 @@ const ui = {
             if (playerName) localStorage.setItem('flammen_player_name', playerName);
             localStorage.setItem(MENU_STATE_KEY, JSON.stringify({
                 selectedLevel: this.selectedLevel,
+                selectedDifficulty: this.selectedDifficulty,
                 selectedLexical: this.selectedLexical,
                 selectedStep: this.selectedStep,
                 slotAssignments: this.slotAssignments
@@ -170,6 +181,7 @@ const ui = {
 
     populateMenu() {
         this.renderLevelButtons();
+        this.renderDifficultyButtons();
         this.renderLexicalGrid();
         this.renderSlots();
         this.renderGrammarPicker();
@@ -210,6 +222,24 @@ const ui = {
         }
     },
 
+    renderDifficultyButtons() {
+        this.difficultyButtons.innerHTML = '';
+        for (const difficulty of DIFFICULTIES) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'difficulty-btn';
+            button.dataset.difficulty = difficulty.id;
+            button.innerHTML = `<span class="level-code">${difficulty.title}</span><span class="level-desc">${difficulty.desc}</span>`;
+            button.addEventListener('click', () => {
+                this.selectedDifficulty = difficulty.id;
+                this.renderDifficultyButtons();
+                this.saveMenuState();
+            });
+            button.classList.toggle('selected', this.selectedDifficulty === difficulty.id);
+            this.difficultyButtons.appendChild(button);
+        }
+    },
+
     renderLexicalGrid() {
         this.lexicalGrid.innerHTML = '';
         for (const topic of LEXICAL_TOPICS) {
@@ -242,6 +272,7 @@ const ui = {
         return {
             playerName,
             langLevel: this.selectedLevel || 'A2',
+            difficulty: this.selectedDifficulty || 'hard',
             lexicalTopic: this.selectedLexical || LEXICAL_TOPICS[0],
             grammarSlots: this.slotAssignments.map((grammarTopic, index) => ({
                 grammarTopic,
@@ -387,9 +418,11 @@ const ui = {
         const final = data.finalTrial ? '<span class="hud-danger">неверная дверь смертельна</span>' : '';
         const heat = data.heatActive ? '<span class="hud-danger">жар ускорен</span>' : '';
         const wave = data.fireWaveActive ? '<span class="hud-danger">волна огня</span>' : '';
+        const difficultyLabels = { easy: 'лёгкий', medium: 'средний', hard: 'трудный' };
+        const difficulty = `${difficultyLabels[data.difficulty] || 'трудный'} x${data.difficultyTimeScale}`;
 
         this.hud.innerHTML =
-            `<div class="hud-row"><b>Режим ${data.level}</b> ${data.modeName} <span>${data.modeShort}</span></div>` +
+            `<div class="hud-row"><b>Режим ${data.level}</b> ${data.modeName} <span>${data.modeShort}</span> <span>${difficulty}</span></div>` +
             `<div class="hud-row">Мост <b>${data.bridge}/${data.bridges}</b> - ${tileLabel} - ${prepared}</div>` +
             `<div class="hud-row dim">Верные двери: <b>${data.foundCorrect}/${data.correctDoors}</b> - ложные: <b>${data.revealedFalse}/6</b> - ${route || bank}</div>` +
             `<div class="hud-row dim">${altar} ${final} ${heat} ${wave}</div>`;

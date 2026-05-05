@@ -354,6 +354,7 @@ export class QuestionBank {
         this.selectedSlots = (settings.grammarSlots || [])
             .filter((slot) => slot && slot.grammarTopic)
             .map((slot) => ({
+                bridgeIndex: Number.isInteger(slot.bridgeIndex) ? slot.bridgeIndex : null,
                 grammarTopic: slot.grammarTopic,
                 isWortstellung: Boolean(slot.isWortstellung)
             }));
@@ -361,14 +362,19 @@ export class QuestionBank {
         this.questionPool = Object.create(null);
         this.fetching = Object.create(null);
         this.usedDisplays = Object.create(null);
-        this.prefetchAll();
     }
 
-    prefetchAll() {
-        const slots = this._slotCycle().slice(0, 5);
-        for (const slot of slots) {
-            this._ensurePool(slot);
-        }
+    hasBridgePool(bridgeIndex) {
+        const slot = this.slotForBridge(bridgeIndex);
+        if (!slot) return false;
+        const pool = this.questionPool[this._slotKey(slot)];
+        return Boolean(pool && pool.length > 0);
+    }
+
+    slotForBridge(bridgeIndex) {
+        const slots = this._slotCycle();
+        const direct = slots.find((slot) => slot.bridgeIndex === bridgeIndex);
+        return direct || slots[bridgeIndex % slots.length] || slots[0];
     }
 
     async nextQuestion(slotOverride = null) {
@@ -531,7 +537,8 @@ export class QuestionBank {
     }
 
     _slotKey(slot) {
-        return `${slot.grammarTopic}:${slot.isWortstellung ? 'w' : 'g'}`;
+        const bridge = Number.isInteger(slot.bridgeIndex) ? slot.bridgeIndex : 'cycle';
+        return `${bridge}:${slot.grammarTopic}:${slot.isWortstellung ? 'w' : 'g'}`;
     }
 
     _isValidQuestion(question) {
