@@ -88,6 +88,162 @@ function isValidQuestion(q) {
   );
 }
 
+function normalizeAnswerText(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[„“"]/g, '')
+    .trim()
+    .toLowerCase();
+}
+
+function answerLetterToIndex(letter) {
+  const value = String(letter || '').trim().toUpperCase();
+  return ['A', 'B', 'C', 'D'].indexOf(value);
+}
+
+function parseSyntheticQuestions(rawText, expectedCount) {
+  const text = String(rawText || '').replace(/\r/g, '').trim();
+  const solutionMarker = text.match(/\n\s*(?:={2,}\s*)?(?:LÖSUNGEN|LOESUNGEN|ANTWORTEN|SCHLÜSSEL|SCHLUESSEL|KEYS)(?:\s*={2,})?\s*\n/i);
+  if (!solutionMarker) return [];
+
+  const tasksText = text.slice(0, solutionMarker.index).replace(/^\s*(?:={2,}\s*)?AUFGABEN(?:\s*={2,})?\s*/i, '').trim();
+  const keysText = text.slice(solutionMarker.index + solutionMarker[0].length).trim();
+  const keyMap = new Map();
+  const keyRegex = /(?:^|\n)\s*(\d{1,2})\s*[\.\):=-]\s*([ABCD])(?:\s*=\s*(.+?))?\s*(?=\n|$)/gi;
+  let keyMatch;
+  while ((keyMatch = keyRegex.exec(keysText))) {
+    const number = Number(keyMatch[1]);
+    const index = answerLetterToIndex(keyMatch[2]);
+    if (number > 0 && index >= 0) {
+      keyMap.set(number, {
+        index,
+        answerText: keyMatch[3] ? keyMatch[3].trim() : ''
+      });
+    }
+  }
+
+  const blocks = tasksText
+    .split(/\n(?=\s*\d{1,2}\.\s+)/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  const parsed = [];
+  for (const block of blocks) {
+    const numberMatch = block.match(/^\s*(\d{1,2})\.\s*(.*)$/m);
+    if (!numberMatch) continue;
+
+    const number = Number(numberMatch[1]);
+    const key = keyMap.get(number);
+    if (!key) continue;
+
+    const lines = block.split('\n').map((line) => line.trim()).filter(Boolean);
+    const optionLines = [];
+    const bodyLines = [];
+    for (const line of lines) {
+      const optionMatch = line.match(/^([ABCD])[\)\.:]\s*(.+)$/i);
+      if (optionMatch) {
+        optionLines.push({
+          label: optionMatch[1].toUpperCase(),
+          value: optionMatch[2].trim()
+        });
+      } else if (!/^\d{1,2}\.\s*$/.test(line)) {
+        bodyLines.push(line.replace(/^\d{1,2}\.\s*/, '').trim());
+      }
+    }
+
+    if (optionLines.length !== 4) continue;
+    const orderedOptions = ['A', 'B', 'C', 'D'].map((label) => optionLines.find((option) => option.label === label)?.value || '');
+    if (orderedOptions.some((option) => !option)) continue;
+
+    const uniqueOptions = new Set(orderedOptions.map(normalizeAnswerText));
+    if (uniqueOptions.size !== 4) continue;
+
+    if (key.answerText) {
+      const keyText = normalizeAnswerText(key.answerText);
+      const optionText = normalizeAnswerText(orderedOptions[key.index]);
+      if (keyText && keyText !== optionText) continue;
+    }
+
+    const instructionLine = bodyLines.find((line) => /^Anweisung\s*:/i.test(line));
+    const displayLine = bodyLines.find((line) => /^(Satz|Aufgabe|Wörter|Woerter)\s*:/i.test(line));
+    const instruction = instructionLine ?
+      instructionLine.replace(/^Anweisung\s*:\s*/i, '').trim() :
+      'Wähle die richtige Option.';
+    const display = displayLine ?
+      displayLine.replace(/^(Satz|Aufgabe|Wörter|Woerter)\s*:\s*/i, '').trim() :
+      bodyLines.filter((line) => !/^Anweisung\s*:/i.test(line))[0];
+
+    const question = {
+      text: instruction,
+      display,
+      options: orderedOptions,
+      correct: key.index
+    };
+
+    if (isValidQuestion(question)) parsed.push(question);
+    if (parsed.length >= expectedCount) break;
+  }
+
+  return parsed;
+}
+
+function parseJsonQuestions(rawText) {
+  const text = String(rawText || '').trim();
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  const jsonStr = jsonMatch ? jsonMatch[0] : text;
+  const parsed = JSON.parse(jsonStr);
+  return Array.isArray(parsed) ? parsed.filter(isValidQuestion) : [];
+}
+
+function buildSyntheticPrompt({ level, lexicalTopic, grammarTopic, isWortstellung, questionsCount, exclude, topicRule }) {
+  const topicPart = topicRule ? `\nSpezifische Regel für "${grammarTopic}":\n${topicRule}\n` : '';
+  const excludePart = exclude && exclude.length
+    ? `\nVerwende diese Sätze nicht erneut: ${exclude.slice(-10).map((item) => `"${item}"`).join(', ')}\n`
+    : '';
+  const taskKind = isWortstellung
+    ? 'Wortstellungsübungen. Die Aufgabe-Zeile enthält durcheinander gebrachte Wörter oder Satzteile.'
+    : 'Lückenübungen. Die Aufgabe-Zeile enthält einen deutschen Satz mit genau einer Lücke ___.';
+
+  return `Du bist ein erfahrener DaF-Lehrer und erstellst Multiple-Choice-Übungen.
+
+Erstelle genau ${questionsCount} deutsche Grammatikübungen.
+Niveau: ${level}. Verwende keine Grammatik und keinen Wortschatz über ${level}.
+Grammatikthema: ${grammarTopic}.
+Lexikalisches Thema: ${lexicalTopic || 'frei'}.
+Übungstyp: ${taskKind}
+${topicPart}${excludePart}
+Qualitätsregeln:
+1. Jede Aufgabe hat genau vier Antwortmöglichkeiten A, B, C, D.
+2. Genau eine Antwort ist grammatisch korrekt.
+3. Die falschen Antworten sind plausibel, aber eindeutig falsch.
+4. Die richtige Antwort muss absolut korrekt sein. Wenn du unsicher bist, formuliere die Aufgabe neu.
+5. Löse jede deiner Aufgaben selbst und schreibe die Schlüssel erst nach der Selbstprüfung.
+6. In den Lösungen muss der Buchstabe und der exakte Text der richtigen Option stehen.
+7. Keine abgeschnittenen Sätze. Keine Erklärungen. Kein JSON. Kein Markdown.
+
+Ausgabeformat, exakt so:
+AUFGABEN
+1. Anweisung: Wähle die richtige Option.
+Satz: ...
+A) ...
+B) ...
+C) ...
+D) ...
+
+2. Anweisung: Wähle die richtige Option.
+Satz: ...
+A) ...
+B) ...
+C) ...
+D) ...
+
+LOESUNGEN
+1: A = exakter Text der Option A
+2: C = exakter Text der Option C
+
+Schreibe jetzt den vollständigen Block mit ${questionsCount} Aufgaben und danach den Lösungen.`;
+}
+
 app.get('/healthz', (req, res) => {
   res.json({ ok: true });
 });
@@ -154,32 +310,15 @@ Regeln für Lückenübungen:
 - Jeder Satz ANDERS (verschiedene Subjekte, Verben, Situationen)`;
   }
 
-  const prompt = `Du bist ein erfahrener DaF-Lehrer (Deutsch als Fremdsprache) und Lehrbuchautor. Du erstellst Übungen auf dem Qualitätsniveau von Schritte International, Menschen und Aspekte.
-
-${topicRule ? `GRAMMATIKREGELN für "${grammarTopic}" — halte dich STRIKT daran:\n${topicRule}\n` : ''}
-${taskDescription}
-
-GER-Niveau: ${level}. Halte dich STRIKT an dieses Niveau! Verwende KEINE Grammatik und KEINEN Wortschatz über ${level}.
-${excludeNote}
-
-KRITISCHE REGELN (Verstoß = Ausschuss):
-1. Die korrekte Antwort MUSS grammatisch EINWANDFREI sein. Prüfe vor der Ausgabe jeden Satz: Subjekt, Prädikat, Kasus, Genus, Numerus, Wortstellung.
-2. Jeder Satz MUSS VOLLSTÄNDIG und SINNVOLL abgeschlossen sein. Kein Satz darf abgeschnitten werden! Wenn ein grammatisch korrekter Satz lang sein muss — schreibe ihn lang. Die Länge ist NICHT begrenzt.
-3. Falsche Optionen müssen EINEN KLAREN Fehler enthalten (falscher Kasus, Artikel, Endung, Wortstellung). Keine absurden Optionen.
-4. GENAU EINE korrekte Antwort. Wenn zwei Optionen grammatisch korrekt sind — ist die Übung Ausschuss.
-5. "correct" — Index der korrekten Antwort (0–3). GLEICHMÄSSIG über die Positionen verteilen.
-6. Alle ${questionsCount} Sätze EINZIGARTIG: verschiedene Subjekte, Verben, Situationen. Keine Eintönigkeit.
-7. Verwende lebendige, natürliche Sätze wie in den Lehrbüchern Schritte, Menschen, Aspekte.
-
-QUALITÄTSKONTROLLE — prüfe JEDE Übung BEVOR du sie ausgibst:
-1. Setze die korrekte Option in den Satz ein → ist er grammatisch PERFEKT? Kasus, Genus, Numerus, Konjugation, Wortstellung — alles korrekt?
-2. Setze JEDE falsche Option ein → enthält der Satz einen KLAREN grammatischen Fehler?
-3. Gibt es GENAU EINE korrekte Antwort? Wenn zwei Optionen korrekt sein könnten → Übung neu formulieren!
-4. Passt die Übung zum Thema "${grammarTopic}" und zum Niveau ${level}?
-5. Sind die Sätze natürlich und vollständig?
-
-Antworte NUR mit einem validen JSON-Array, KEIN Markdown, KEINE Erklärungen:
-[{"text":"Anweisung auf Russisch","display":"Deutscher Text","options":["A","B","C","D"],"correct":0}]`;
+  const prompt = buildSyntheticPrompt({
+    level,
+    lexicalTopic,
+    grammarTopic,
+    isWortstellung,
+    questionsCount,
+    exclude,
+    topicRule
+  });
 
   const errors = [];
   let text = null;
@@ -209,16 +348,14 @@ Antworte NUR mit einem validen JSON-Array, KEIN Markdown, KEINE Erklärungen:
   }
 
   try {
-    let jsonStr = text;
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (jsonMatch) jsonStr = jsonMatch[0];
-
-    const parsed = JSON.parse(jsonStr);
-    const valid = parsed.filter(isValidQuestion);
+    let valid = parseSyntheticQuestions(text, questionsCount);
+    if (!valid.length) {
+      valid = parseJsonQuestions(text);
+    }
 
     if (!valid.length) {
       console.error('No valid questions parsed. Raw text:', text.slice(0, 500));
-      return res.status(502).json({ error: 'No valid questions in LLM response' });
+      return res.status(502).json({ error: 'No valid synthetic questions in LLM response' });
     }
 
     if (valid.length > questionsCount) {
@@ -228,7 +365,7 @@ Antworte NUR mit einem validen JSON-Array, KEIN Markdown, KEINE Erklärungen:
 
     res.json({ questions: valid.slice(0, questionsCount) });
   } catch (err) {
-    console.error('JSON parse error:', err.message, 'Raw text:', text.slice(0, 500));
+    console.error('Synthetic parse error:', err.message, 'Raw text:', text.slice(0, 500));
     res.status(502).json({ error: 'Failed to parse LLM response', detail: err.message });
   }
 });
