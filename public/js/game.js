@@ -1868,11 +1868,26 @@ export class Game {
         const profile = this.getLevelProfile();
         const fireWave = this.fireWaveUntil > this.elapsed;
         const globalHeat = this.globalHeatUntil > this.elapsed ? 1.22 : 1.0;
+        const currentBridgeIndex = this.playerBridge;
         let activeFlameCount = 0;
 
         for (const s of this.statues) {
             const distSq = s.position.distanceToSquared(playerPos);
             s.group.visible = distSq < STATUE_VISIBLE_RADIUS_SQ;
+
+            if (s.bridgeIndex !== currentBridgeIndex) {
+                this.setStatueFlame(s, false);
+                s.eyeLight.visible = false;
+                s.eyeLight.intensity = 0;
+                s.coal.visible = false;
+                s.coalMat.opacity = 0.04;
+                s.coal.scale.setScalar(0.62);
+                s.isFireActive = false;
+                s.afterFireSafeUntil = 0;
+                s.visualState = 'cold';
+                continue;
+            }
+
             const inActiveRange = distSq < FLAME_ACTIVE_RADIUS_SQ;
 
             if (!inActiveRange) {
