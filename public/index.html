@@ -178,25 +178,26 @@
         }
         .step-title { margin: 0 0 8px; color: #ffd189; font-size: 20px; }
         .step-hint { margin: 0 0 16px; color: #9e9388; line-height: 1.45; }
-        .level-buttons, .lexical-grid {
+        .level-buttons, .difficulty-buttons, .lexical-grid {
             display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
             margin: 14px 0 18px;
         }
+        .difficulty-buttons { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         .lexical-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); max-height: 310px; overflow-y: auto; padding-right: 4px; }
-        .level-btn, .lexical-btn, .grammar-tag, .ritual-slot {
+        .level-btn, .difficulty-btn, .lexical-btn, .grammar-tag, .ritual-slot {
             border-radius: 8px; border: 1px solid rgba(255, 164, 80, 0.22);
             background: rgba(18, 14, 13, 0.92); color: #ead6bd; cursor: pointer;
             transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
         }
-        .level-btn:hover, .lexical-btn:hover, .grammar-tag:hover, .ritual-slot:hover {
+        .level-btn:hover, .difficulty-btn:hover, .lexical-btn:hover, .grammar-tag:hover, .ritual-slot:hover {
             border-color: rgba(255, 144, 42, 0.72); background: rgba(48, 22, 13, 0.94);
         }
-        .level-btn.selected, .lexical-btn.selected, .grammar-tag.selected-grammar, .ritual-slot.selected-slot {
+        .level-btn.selected, .difficulty-btn.selected, .lexical-btn.selected, .grammar-tag.selected-grammar, .ritual-slot.selected-slot {
             border-color: rgba(255, 194, 104, 0.9);
             background: rgba(82, 28, 13, 0.94);
             box-shadow: 0 0 22px rgba(255, 80, 20, 0.18);
         }
-        .level-btn { min-height: 92px; padding: 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+        .level-btn, .difficulty-btn { min-height: 92px; padding: 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
         .level-code { color: #ffc06c; font-size: 24px; font-weight: 800; }
         .level-desc { color: #9e9388; font-size: 12px; }
         .lexical-btn { min-height: 54px; padding: 11px 12px; text-align: left; }
@@ -246,7 +247,7 @@
         @media (max-width: 760px) {
             #hud { font-size: 12px; }
             #question-options { grid-template-columns: 1fr; }
-            .setup-progress, .level-buttons, .lexical-grid, .ritual-slots { grid-template-columns: 1fr; }
+            .setup-progress, .level-buttons, .difficulty-buttons, .lexical-grid, .ritual-slots { grid-template-columns: 1fr; }
             .setup-step { min-height: 0; }
             .menu-shell { padding: 18px; }
             #peek-panel { top: auto; right: 14px; bottom: 64px; }
@@ -311,6 +312,9 @@
                 <h2 class="step-title">Выберите уровень немецкого</h2>
                 <p class="step-hint">AI-генерация будет держаться выбранного уровня и не уходить выше него.</p>
                 <div id="level-buttons" class="level-buttons"></div>
+                <h2 class="step-title">Выберите сложность огня</h2>
+                <p class="step-hint">Сложность меняет запас времени во всех огненных циклах. Трудный режим оставляет текущие тайминги.</p>
+                <div id="difficulty-buttons" class="difficulty-buttons"></div>
                 <div class="menu-actions">
                     <button id="back-to-step1" class="btn-secondary" type="button">НАЗАД</button>
                 </div>
