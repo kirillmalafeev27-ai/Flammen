@@ -46,7 +46,7 @@ const START_GRACE = 1.0;
 const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
 const PEEK_HEAT_ACCEL = 0.45;
-const INNER_DOOR_GUARD_PERIOD = 10.0;
+const INNER_DOOR_GUARD_PERIOD = 14.0;
 const INNER_DOOR_GUARD_WARNING = 6.0;
 const INNER_DOOR_GUARD_DURATION = 2.0;
 const INNER_DOOR_GUARD_DECAY = 1.0;
@@ -60,7 +60,7 @@ const MOAI_FACE_YAW = Math.PI;
 const DIFFICULTY_TIME_SCALES = {
     hard: 1.0,
     medium: 1.75,
-    easy: 2.5
+    easy: 3.0
 };
 const GATE_BASE_N = 3.2;
 const GATE_BRIDGE_TIMINGS = [
@@ -525,7 +525,8 @@ export class Game {
 
     resetInnerDoorGuardTimer(statue, sourceBridgeIndex) {
         statue.sourceBridgeIndex = sourceBridgeIndex;
-        statue.heatOffset = -this.elapsed - this.globalHeatPhaseOffset;
+        statue.innerCycleStartedAt = this.elapsed;
+        statue.heatOffset = 0;
         statue.afterFireSafeUntil = 0;
         statue.entrySafeUntil = this.elapsed + TURN_DURATION + INNER_DOOR_GUARD_ENTRY_GRACE;
         statue.isFireActive = false;
@@ -1986,7 +1987,9 @@ export class Game {
         }
         if (bridgeTiming && forcedPhaseSeed === null) phaseSeed = positiveModulo(phaseSeed + bridgeTiming.phase * timeScale, period);
 
-        const rawPhase = this.elapsed * heatSpeed + this.globalHeatPhaseOffset + phaseSeed + statue.heatOffset;
+        const rawPhase = innerDoorGuardCycle ?
+            Math.max(0, this.elapsed - (statue.innerCycleStartedAt ?? this.elapsed)) * heatSpeed + phaseSeed + statue.heatOffset :
+            this.elapsed * heatSpeed + this.globalHeatPhaseOffset + phaseSeed + statue.heatOffset;
         const phase = positiveModulo(rawPhase, period);
         const cycleIndex = Math.floor(rawPhase / period);
 
