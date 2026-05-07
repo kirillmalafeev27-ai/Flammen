@@ -46,6 +46,11 @@ const START_GRACE = 1.0;
 const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
 const PEEK_HEAT_ACCEL = 0.45;
+const INNER_DOOR_GUARD_PERIOD = 10.0;
+const INNER_DOOR_GUARD_WARNING = 6.0;
+const INNER_DOOR_GUARD_DURATION = 2.0;
+const INNER_DOOR_GUARD_DECAY = 1.0;
+const INNER_DOOR_GUARD_ENTRY_GRACE = 1.0;
 const GLOBAL_HEAT_MIN_BOOST = 0.08;
 const GLOBAL_HEAT_MAX_BOOST = 0.18;
 const GLOBAL_HEAT_AMOUNT_SCALE = 0.24;
@@ -492,7 +497,13 @@ export class Game {
 
     spawnInnerDoorGuard(bridgeIndex, sourceBridgeIndex) {
         const bridge = this.bridges[bridgeIndex];
-        if (!bridge || this.innerDoorGuards.has(bridgeIndex)) return null;
+        if (!bridge) return null;
+
+        const existing = this.innerDoorGuards.get(bridgeIndex);
+        if (existing) {
+            this.resetInnerDoorGuardTimer(existing, sourceBridgeIndex);
+            return existing;
+        }
 
         const doorTile = bridge.tiles.length - 1;
         const side = positiveModulo(bridgeIndex - sourceBridgeIndex, cfg.bridges) === 1 ? 1 : -1;
@@ -503,14 +514,22 @@ export class Game {
         statue.bridgeIndex = bridge.index;
         statue.falsePhase = (bridge.index * 1.91 + 4.7) % 7.4;
         statue.innerDoorGuard = true;
-        statue.heatOffset = -this.elapsed;
-        statue.sourceBridgeIndex = sourceBridgeIndex;
+        this.resetInnerDoorGuardTimer(statue, sourceBridgeIndex);
 
         this.statues.push(statue);
         bridge.fireStatues.push(statue);
         bridge.innerDoorGuard = statue;
         this.innerDoorGuards.set(bridgeIndex, statue);
         return statue;
+    }
+
+    resetInnerDoorGuardTimer(statue, sourceBridgeIndex) {
+        statue.sourceBridgeIndex = sourceBridgeIndex;
+        statue.heatOffset = -this.elapsed - this.globalHeatPhaseOffset;
+        statue.afterFireSafeUntil = 0;
+        statue.entrySafeUntil = this.elapsed + TURN_DURATION + INNER_DOOR_GUARD_ENTRY_GRACE;
+        statue.isFireActive = false;
+        this.setStatueFlame(statue, false);
     }
 
     clearInnerDoorGuards() {
@@ -1928,10 +1947,10 @@ export class Game {
         }
 
         if (innerDoorGuardCycle) {
-            period = 6.0;
-            warning = 2.2;
-            duration = 1.6;
-            decay = 1.0;
+            period = INNER_DOOR_GUARD_PERIOD;
+            warning = INNER_DOOR_GUARD_WARNING;
+            duration = INNER_DOOR_GUARD_DURATION;
+            decay = INNER_DOOR_GUARD_DECAY;
             heatSpeed = 1.0;
             forcedPhaseSeed = 0.0;
             skipWarningClamp = true;
@@ -2065,15 +2084,19 @@ export class Game {
             const warning = cycle.warning;
             const fireEnd = cycle.fireEnd;
             const decayEnd = cycle.decayEnd;
+            const entrySafe = Boolean(s.innerDoorGuard && this.elapsed < (s.entrySafeUntil || 0));
             const falseHeatWindow = cycle.falseCycle && phase >= warning * 0.45 && phase < decayEnd;
-            const rawFire = fireWave || (!falseHeatWindow && phase >= warning && phase < fireEnd);
+            const rawFire = !entrySafe && (
+                (!s.innerDoorGuard && fireWave) ||
+                (!falseHeatWindow && phase >= warning && phase < fireEnd)
+            );
             if (profile.postFireBreak && s.isFireActive && !rawFire) {
                 s.afterFireSafeUntil = Math.max(s.afterFireSafeUntil || 0, this.elapsed + profile.postFireBreak);
             }
             const inPostFireBreak = Boolean(profile.postFireBreak && this.elapsed < (s.afterFireSafeUntil || 0));
             const isFire = !inPostFireBreak && rawFire;
-            const isWarning = !inPostFireBreak && !fireWave && !cycle.falseCycle && phase < warning;
-            const isDecay = inPostFireBreak || (!fireWave && !cycle.falseCycle && phase >= fireEnd && phase < decayEnd);
+            const isWarning = !inPostFireBreak && (!fireWave || s.innerDoorGuard) && !cycle.falseCycle && phase < warning;
+            const isDecay = inPostFireBreak || ((!fireWave || s.innerDoorGuard) && !cycle.falseCycle && phase >= fireEnd && phase < decayEnd);
             const falsePhase = (this.elapsed + s.falsePhase) % 7.4;
             const isFalseHeat = !fireWave && (falseHeatWindow ||
                 (profile.falseHeats && !isFire && !isWarning && !isDecay && falsePhase < 1.25));
