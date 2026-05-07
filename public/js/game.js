@@ -46,6 +46,9 @@ const START_GRACE = 1.0;
 const FAST_ANSWER_SECONDS = 4.2;
 const TIMER_PEEK_SECONDS = 2.6;
 const PEEK_HEAT_ACCEL = 0.45;
+const GLOBAL_HEAT_MIN_BOOST = 0.08;
+const GLOBAL_HEAT_MAX_BOOST = 0.18;
+const GLOBAL_HEAT_AMOUNT_SCALE = 0.24;
 const STATUE_VISIBLE_RADIUS_SQ = mobileRuntime ? 196 : Infinity;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
@@ -255,6 +258,8 @@ export class Game {
 
         this.fireWaveUntil = 0;
         this.globalHeatUntil = 0;
+        this.globalHeatBoost = 0;
+        this.globalHeatPhaseOffset = 0;
         this.peekUntil = 0;
         this.peekHeatUntil = 0;
         this.peekHeatStatue = null;
@@ -801,6 +806,8 @@ export class Game {
         this.questionRequestToken = null;
         this.fireWaveUntil = 0;
         this.globalHeatUntil = 0;
+        this.globalHeatBoost = 0;
+        this.globalHeatPhaseOffset = 0;
         this.peekUntil = 0;
         this.peekHeatUntil = 0;
         this.peekHeatStatue = null;
@@ -999,6 +1006,8 @@ export class Game {
         this.moveAnim = null;
         this.fireWaveUntil = 0;
         this.globalHeatUntil = 0;
+        this.globalHeatBoost = 0;
+        this.globalHeatPhaseOffset = 0;
         this.peekUntil = 0;
         this.peekHeatUntil = 0;
         this.peekHeatStatue = null;
@@ -1073,7 +1082,7 @@ export class Game {
     requestMove(toBridge, toTile) {
         if (this.questionLoading) return;
         if (this.isInnerDoorStep(this.playerBridge, this.playerTile, toBridge, toTile)) {
-            this.handleInnerDoorStep(toBridge, toTile);
+            this.requestInnerDoorStep(toBridge, toTile);
             return;
         }
         if (this.playerTile === cfg.tiles - 1 && toTile !== cfg.tiles - 1) {
@@ -1135,8 +1144,25 @@ export class Game {
         return clockwise === 1 || clockwise === cfg.bridges - 1;
     }
 
-    handleInnerDoorStep(toBridge, toTile) {
-        const sourceBridge = this.playerBridge;
+    requestInnerDoorStep(toBridge, toTile) {
+        this.openQuestion({
+            context: 'innerDoor',
+            sourceBridge: this.playerBridge,
+            sourceTile: this.playerTile,
+            fromBridge: this.playerBridge,
+            fromTile: this.playerTile,
+            targetBridge: toBridge,
+            targetTile: toTile,
+            hiddenResult: false
+        });
+    }
+
+    completeInnerDoorStep(current, notes = []) {
+        const toBridge = current.targetBridge;
+        const toTile = current.targetTile;
+        const sourceBridge = current.fromBridge;
+        if (!this.isInnerDoorStep(sourceBridge, current.fromTile, toBridge, toTile)) return;
+
         if (!Number.isInteger(this.innerDoorAnchorBridge)) {
             this.innerDoorAnchorBridge = sourceBridge;
         }
@@ -1148,10 +1174,11 @@ export class Game {
 
         this.suppressDoorAutoEnterOnce = true;
         this.beginMove(toBridge, toTile);
-        this.ui.showMessage(returningToAnchor ?
-            'Возврат к исходной двери свободен: новая голова там не появляется.' :
-            'Внутренний периметр открыт. У целевой двери проснулась новая голова.',
-            2200);
+        const note = notes.length ? ` ${notes.join(' ')}` : '';
+        this.ui.showMessage((returningToAnchor ?
+            'Правильно. Возврат к исходной двери открыт, новая голова там не появляется.' :
+            'Правильно. Внутренний периметр открыт, у целевой двери проснулась новая голова.') + note,
+            2400);
         this.ui.update(this);
     }
 
@@ -1297,7 +1324,7 @@ export class Game {
     }
 
     getQuestionSlotForDetails(details) {
-        if (!details || details.context !== 'move') return null;
+        if (!details || !['move', 'innerDoor', 'door'].includes(details.context)) return null;
         const sourceBridge = Number.isInteger(details.sourceBridge) ? details.sourceBridge : this.playerBridge;
         const bridgeIndex = sourceBridge;
         const slot = this.questionBank.slotForBridge(bridgeIndex);
@@ -1338,6 +1365,31 @@ export class Game {
             return;
         }
 
+        if (current.context === 'innerDoor') {
+            if (correct) {
+                this.questionsCorrect += 1;
+                this.completeInnerDoorStep(current, this.onCorrectTacticalAnswer(fast));
+            } else {
+                this.questionBank.returnQuestion(current.question);
+                this.onWrongTacticalAnswer('Неверно. Переход по внутреннему периметру не открылся, все головы греются быстрее.');
+            }
+            this.ui.update(this);
+            return;
+        }
+
+        if (current.context === 'door') {
+            if (correct) {
+                this.questionsCorrect += 1;
+                const notes = this.onCorrectTacticalAnswer(fast);
+                this.resolveDoorEntry(notes);
+            } else {
+                this.questionBank.returnQuestion(current.question);
+                this.onWrongTacticalAnswer('Неверно. Дверь не открылась, все головы греются быстрее.');
+            }
+            this.ui.update(this);
+            return;
+        }
+
         if (correct) {
             this.questionsCorrect += 1;
             const tacticalNotes = this.onCorrectTacticalAnswer(fast);
@@ -1368,6 +1420,8 @@ export class Game {
 
         const display = String(question.display || '').replace(/_{2,}/g, '—');
         const context = current.context === 'altar' ? 'Алтарь' :
+            current.context === 'door' ? 'Дверь' :
+            current.context === 'innerDoor' ? 'Внутренний периметр' :
             current.hiddenResult ? 'Банк' :
             current.routeUnlock ? 'Переход' :
             'Ход';
@@ -1508,19 +1562,26 @@ export class Game {
 
     tryEnterDoor() {
         if (this.playerTile !== cfg.tiles - 1) return false;
+        if (this.currentQuestion || this.questionLoading) return true;
+        this.resolveDoorEntry();
+        return true;
+    }
 
+    resolveDoorEntry(notes = []) {
         const correct = this.correctDoors.has(this.playerBridge);
         const finalTrial = this.getLevelProfile().finalDoorTrial;
+        const note = notes.length ? ` ${notes.join(' ')}` : '';
 
         if (this.revealedFalseDoors.has(this.playerBridge)) {
             this.playDoorTone(false);
-            this.ui.showMessage('Эта дверь уже раскрыта как ложная. Ищите другой мост.', 1800);
+            this.ui.showMessage(`Ответ верный, но эта дверь уже раскрыта как ложная. Ищите другой мост.${note}`, 2200);
             return true;
         }
 
         this.playDoorTone(correct);
 
         if (correct) {
+            if (note) this.ui.showMessage(note, 1200);
             this.handleCorrectDoor(finalTrial);
             return true;
         }
@@ -1582,6 +1643,10 @@ export class Game {
         this.innerDoorAnchorBridge = null;
         this.suppressDoorAutoEnterOnce = false;
         this.currentQuestion = null;
+        this.fireWaveUntil = 0;
+        this.globalHeatUntil = 0;
+        this.globalHeatBoost = 0;
+        this.globalHeatPhaseOffset = 0;
         this.startGraceUntil = START_GRACE;
         // Question pools intentionally survive level transitions; only changed setup settings reset them.
 
@@ -1639,26 +1704,15 @@ export class Game {
         notes.push('Один свободный шаг оставлен для отступления.');
 
         if (penalty === 'heat') {
-            this.globalHeatUntil = this.elapsed + 5.5;
-            for (const bridge of this.bridges) {
-                const ringDistance = Math.min(
-                    Math.abs(bridge.index - wrongBridge),
-                    cfg.bridges - Math.abs(bridge.index - wrongBridge)
-                );
-                if (ringDistance <= 1) {
-                    for (const statue of bridge.fireStatues) {
-                        statue.heatOffset += 0.38;
-                    }
-                }
-            }
-            notes.push('Ближайшие головы слегка ускорили нагрев, но есть короткая защита от сгорания.');
+            this.heatAllStatues(0.38, 5.5);
+            notes.push('Головы слегка ускорили нагрев без скачка фазы, плюс есть короткая защита от сгорания.');
         } else if (penalty === 'clearBank') {
             const count = this.bankedMoves.size + (this.bankRun ? this.bankRun.answers.length : 0);
             this.bankedMoves.clear();
             this.bankRun = null;
             this.queuedBankMoves = [];
             notes.push(count ? `Банк ходов сгорел: ${count}, но шаг отступления сохранён.` : 'Банк оказался пуст, штраф ушёл в лёгкий жар.');
-            if (!count) this.globalHeatUntil = this.elapsed + 4;
+            if (!count) this.heatAllStatues(0.25, 4);
         } else if (penalty === 'wave') {
             this.fireWaveUntil = this.elapsed + 2.8;
             notes.push('По мостам пошла короткая волна огня, но у вас есть окно защиты.');
@@ -1766,7 +1820,7 @@ export class Game {
                     if (this.suppressDoorAutoEnterOnce) {
                         this.suppressDoorAutoEnterOnce = false;
                     } else {
-                        this.tryEnterDoor();
+                        this.ui.showMessage('У двери: E/кнопка действия - войти; влево/вправо - вопрос на внутренний периметр.', 2200);
                     }
                 }
             }
@@ -1913,7 +1967,7 @@ export class Game {
         }
         if (bridgeTiming && forcedPhaseSeed === null) phaseSeed = positiveModulo(phaseSeed + bridgeTiming.phase * timeScale, period);
 
-        const rawPhase = this.elapsed * heatSpeed + phaseSeed + statue.heatOffset;
+        const rawPhase = this.elapsed * heatSpeed + this.globalHeatPhaseOffset + phaseSeed + statue.heatOffset;
         const phase = positiveModulo(rawPhase, period);
         const cycleIndex = Math.floor(rawPhase / period);
 
@@ -1979,7 +2033,13 @@ export class Game {
         const playerPos = this.player.position;
         const profile = this.getLevelProfile();
         const fireWave = this.fireWaveUntil > this.elapsed;
-        const globalHeat = this.globalHeatUntil > this.elapsed ? 1.22 : 1.0;
+        const heatBoost = this.globalHeatUntil > this.elapsed ? (this.globalHeatBoost || GLOBAL_HEAT_MIN_BOOST) : 0;
+        if (heatBoost > 0) {
+            this.globalHeatPhaseOffset += dt * heatBoost;
+        } else {
+            this.globalHeatBoost = 0;
+        }
+        const globalHeat = 1.0;
         const currentBridgeIndex = this.playerBridge;
         let activeFlameCount = 0;
 
@@ -2221,7 +2281,7 @@ export class Game {
         const cycle = this.fillStatueCycle(
             statue,
             profile,
-            this.globalHeatUntil > this.elapsed ? 1.22 : 1.0
+            1.0
         );
 
         if (this.fireWaveUntil > this.elapsed) {
@@ -2264,12 +2324,15 @@ export class Game {
     }
 
     heatAllStatues(amount, duration = 0) {
-        for (const statue of this.statues) {
-            statue.heatOffset += amount;
-        }
-        if (duration > 0) {
-            this.globalHeatUntil = Math.max(this.globalHeatUntil, this.elapsed + duration);
-        }
+        if (duration <= 0) return;
+        if (this.elapsed >= this.globalHeatUntil) this.globalHeatBoost = 0;
+        const boost = clamp(
+            amount * GLOBAL_HEAT_AMOUNT_SCALE,
+            GLOBAL_HEAT_MIN_BOOST,
+            GLOBAL_HEAT_MAX_BOOST
+        );
+        this.globalHeatBoost = Math.max(this.globalHeatBoost, boost);
+        this.globalHeatUntil = Math.max(this.globalHeatUntil, this.elapsed + duration);
     }
 
     getLevelProfile() {

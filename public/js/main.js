@@ -569,16 +569,24 @@ const ui = {
         const question = current.question;
         const targetLabel = current.context === 'altar'
             ? `Алтарь: вопрос ${current.altarIndex}/2`
-            : current.hiddenResult
-                ? `Банк хода: мост ${current.targetBridge + 1}, клетка ${current.targetTile}`
-                : `Свободный ход: мост ${current.targetBridge + 1}`;
+            : current.context === 'door'
+                ? `Вход в дверь: мост ${current.targetBridge + 1}`
+                : current.context === 'innerDoor'
+                    ? `Внутренний периметр: мост ${current.fromBridge + 1} -> ${current.targetBridge + 1}`
+                    : current.hiddenResult
+                        ? `Банк хода: мост ${current.targetBridge + 1}, клетка ${current.targetTile}`
+                        : `Свободный ход: мост ${current.targetBridge + 1}`;
 
         this.questionMode.textContent = targetLabel;
         this.questionTopic.textContent = `${question.topic} - ${question.level} - ${question.lexicalTopic}`;
         this.questionText.textContent = `${question.text} ${question.display}`;
-        this.questionFeedback.textContent = current.hiddenResult
-            ? 'Результат скрыт. Выберите вариант кликом или тапом.'
-            : 'Выберите вариант кликом или тапом. Правильный ответ заряжает свободный ход.';
+        this.questionFeedback.textContent = current.context === 'door'
+            ? 'Выберите вариант кликом или тапом. Правильный ответ открывает проверку двери.'
+            : current.context === 'innerDoor'
+                ? 'Выберите вариант кликом или тапом. Правильный ответ открывает переход по внутреннему периметру.'
+                : current.hiddenResult
+                    ? 'Результат скрыт. Выберите вариант кликом или тапом.'
+                    : 'Выберите вариант кликом или тапом. Правильный ответ заряжает свободный ход.';
 
         this.questionOptions.innerHTML = '';
         this.optionNodes = question.options.map((option, index) => {
