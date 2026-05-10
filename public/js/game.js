@@ -679,7 +679,6 @@ export class Game {
             [idx[i], idx[j]] = [idx[j], idx[i]];
         }
         this.correctDoors.add(idx[0]);
-        this.correctDoors.add(idx[1]);
         this.refreshDoorVisuals();
     }
 
@@ -846,7 +845,7 @@ export class Game {
             statue.coalMat.opacity = 0.04;
         }
 
-        if (!preserveDoorIntel || this.correctDoors.size < 2) {
+        if (!preserveDoorIntel || this.correctDoors.size < 1) {
             this.randomizeCorrectDoors();
         } else {
             this.foundCorrectDoors.clear();
@@ -1617,7 +1616,7 @@ export class Game {
 
     handleCorrectDoor(finalTrial) {
         if (this.foundCorrectDoors.has(this.playerBridge)) {
-            this.ui.showMessage(`Эта верная дверь уже засчитана: ${this.foundCorrectDoors.size}/${this.correctDoors.size}. Ищите вторую.`, 1800);
+            this.ui.showMessage('Эта верная дверь уже найдена.', 1800);
             return;
         }
 
@@ -1625,7 +1624,7 @@ export class Game {
         this.refreshDoorVisuals();
 
         if (this.foundCorrectDoors.size >= this.correctDoors.size) {
-            this.ui.showMessage('Обе верные двери найдены.', 1200);
+            this.ui.showMessage('Верная дверь найдена.', 1200);
             if (finalTrial) {
                 this.finishRun(STATE.WON);
             } else {
@@ -1638,7 +1637,7 @@ export class Game {
             this.readyMoves = Math.max(this.readyMoves, 1);
         }
         this.startGraceUntil = this.elapsed + 1.4;
-        this.ui.showMessage(`Верная дверь найдена: ${this.foundCorrectDoors.size}/${this.correctDoors.size}. Нужна ещё одна.`, 2600);
+        this.ui.showMessage(`Верная дверь найдена: ${this.foundCorrectDoors.size}/${this.correctDoors.size}.`, 2600);
         this.ui.update(this);
     }
 

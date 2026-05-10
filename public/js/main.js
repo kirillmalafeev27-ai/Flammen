@@ -557,11 +557,12 @@ const ui = {
         const wave = data.fireWaveActive ? '<span class="hud-danger">волна огня</span>' : '';
         const difficultyLabels = { easy: 'лёгкий', medium: 'средний', hard: 'трудный' };
         const difficulty = `${difficultyLabels[data.difficulty] || 'трудный'} x${data.difficultyTimeScale}`;
+        const falseDoorTotal = Math.max(0, data.bridges - data.correctDoors);
 
         this.hud.innerHTML =
             `<div class="hud-row"><b>Режим ${data.level}</b> ${data.modeName} <span>${data.modeShort}</span> <span>${difficulty}</span></div>` +
             `<div class="hud-row">Мост <b>${data.bridge}/${data.bridges}</b> - ${tileLabel} - ${prepared}</div>` +
-            `<div class="hud-row dim">Верные двери: <b>${data.foundCorrect}/${data.correctDoors}</b> - ложные: <b>${data.revealedFalse}/6</b> - ${route || bank}</div>` +
+            `<div class="hud-row dim">Верная дверь: <b>${data.foundCorrect}/${data.correctDoors}</b> - ложные: <b>${data.revealedFalse}/${falseDoorTotal}</b> - ${route || bank}</div>` +
             `<div class="hud-row dim">${altar} ${final} ${heat} ${wave}</div>`;
     },
 
