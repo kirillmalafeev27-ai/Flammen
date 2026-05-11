@@ -404,6 +404,11 @@ export class QuestionBank {
         return this._fallbackQuestion(slot);
     }
 
+    nextLegacyQuestion(slotOverride = null) {
+        const slot = slotOverride && slotOverride.grammarTopic ? slotOverride : this._nextGrammarSlot();
+        return this._fallbackQuestion(slot);
+    }
+
     async _getGeneratedQuestion(slot) {
         const key = this._slotKey(slot);
         const pool = await this._ensurePool(slot);

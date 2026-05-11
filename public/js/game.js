@@ -1310,7 +1310,10 @@ export class Game {
         this.ui.update(this);
         let question;
         try {
-            question = await this.questionBank.nextQuestion(this.getQuestionSlotForDetails(details));
+            const questionSlot = this.getQuestionSlotForDetails(details);
+            question = details.context === 'innerDoor' ?
+                this.questionBank.nextLegacyQuestion(questionSlot) :
+                await this.questionBank.nextQuestion(questionSlot);
         } catch (error) {
             if (this.questionRequestToken === token) {
                 this.questionLoading = false;
