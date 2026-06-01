@@ -3,18 +3,13 @@ import * as Photons from '../lib/photons.module.js';
 import { GLTFLoader } from './GltfLoader.js';
 import { buildFlamethrower } from './flamethrower.js';
 import { QuestionBank } from './questions.js';
+import { profile } from './device.js';
 
 const params = new URLSearchParams(location.search);
-const qualityParam = params.get('quality') || 'auto';
-const iosRuntime = qualityParam !== 'high' && (
-    /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-);
-const mobileRuntime = qualityParam !== 'high' && (
-    qualityParam === 'low' ||
-    /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
-    (window.matchMedia?.('(pointer: coarse)').matches && navigator.maxTouchPoints > 1)
-);
+// Old/weak Macs are folded into `lowPower` here too (see device.js), so they get
+// the reduced particle budget and statue culling instead of the desktop profile.
+const lowPower = profile.lowPower;
+const iosRuntime = profile.isIos;
 
 const cfg = {
     bridges: parseInt(params.get('bridges') || '8'),
@@ -25,7 +20,7 @@ const cfg = {
     bridgeY: parseFloat(params.get('y') || 'NaN'),
     moaiHeight: parseFloat(params.get('moaiH') || '1.6'),
     fireScale: parseFloat(params.get('fireScale') || '0.18'),
-    releaseMul: parseFloat(params.get('release') || (mobileRuntime ? (iosRuntime ? '2.5' : '3') : '20')),
+    releaseMul: parseFloat(params.get('release') || String(profile.releaseMultiplier)),
     sideOffset: parseFloat(params.get('side') || '1.0'),
     fireMouthY: parseFloat(params.get('mouthY') || '1.1'),
     debug: params.has('debug')
@@ -54,7 +49,7 @@ const INNER_DOOR_GUARD_ENTRY_GRACE = 1.0;
 const GLOBAL_HEAT_MIN_BOOST = 0.08;
 const GLOBAL_HEAT_MAX_BOOST = 0.18;
 const GLOBAL_HEAT_AMOUNT_SCALE = 0.24;
-const STATUE_VISIBLE_RADIUS_SQ = mobileRuntime ? 196 : Infinity;
+const STATUE_VISIBLE_RADIUS_SQ = profile.statueCullRadiusSq;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 const MOAI_FACE_YAW = Math.PI;
 const DIFFICULTY_TIME_SCALES = {
@@ -318,7 +313,7 @@ export class Game {
                 o.castShadow = false;
                 o.receiveShadow = true;
                 if (o.material && o.material.map) {
-                    o.material.map.anisotropy = 4;
+                    o.material.map.anisotropy = profile.textureAnisotropy;
                 }
             }
         });
@@ -2106,7 +2101,7 @@ export class Game {
             const isFalseHeat = !fireWave && (falseHeatWindow ||
                 (profile.falseHeats && !isFire && !isWarning && !isDecay && falsePhase < 1.25));
 
-            if (!mobileRuntime && !isFire && isWarning && phase > warning * 0.7) this.ensureStatueFlame(s);
+            if (!lowPower && !isFire && isWarning && phase > warning * 0.7) this.ensureStatueFlame(s);
             this.setStatueFlame(s, isFire);
             if (isFire) activeFlameCount += 1;
 

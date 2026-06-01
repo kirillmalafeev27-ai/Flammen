@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Game } from './game.js';
 import { LANGUAGE_LEVELS, LEXICAL_TOPICS, GRAMMAR_TOPICS } from './questions.js';
+import { profile } from './device.js';
 
 const MENU_STATE_KEY = 'flammen_menu_state_v2';
 const BRIDGE_COUNT = 8;
@@ -32,24 +33,10 @@ function escapeHtml(value) {
 
 const rootElement = document.querySelector('#root');
 
-const qualityParam = new URLSearchParams(location.search).get('quality') || 'auto';
-
-function detectMobileRuntime() {
-    const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches;
-    const touchDevice = navigator.maxTouchPoints > 1;
-    const mobileAgent = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
-    return Boolean(mobileAgent || (coarsePointer && touchDevice));
-}
-
-function detectIosRuntime() {
-    return /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-}
-
-const mobileRuntime = qualityParam !== 'high' && (qualityParam === 'low' || detectMobileRuntime());
-const iosRuntime = qualityParam !== 'high' && detectIosRuntime();
-const lowPowerDevice = qualityParam === 'low' || (qualityParam === 'auto' && mobileRuntime);
-const pixelRatioCap = qualityParam === 'high' ? 1.5 : (lowPowerDevice ? (iosRuntime ? 0.6 : 0.65) : 1.5);
+const mobileRuntime = profile.mobileRuntime;
+const iosRuntime = profile.isIos;
+const lowPowerDevice = profile.lowPower;
+const pixelRatioCap = profile.pixelRatioCap;
 document.documentElement.classList.toggle('mobile-runtime', mobileRuntime);
 document.documentElement.classList.toggle('ios-runtime', iosRuntime);
 document.documentElement.classList.toggle('low-power-runtime', lowPowerDevice);
@@ -71,8 +58,8 @@ const renderer = new THREE.WebGLRenderer({
     depth: true,
     premultipliedAlpha: false,
     preserveDrawingBuffer: false,
-    precision: lowPowerDevice ? 'mediump' : 'highp',
-    powerPreference: 'high-performance'
+    precision: profile.precision,
+    powerPreference: profile.powerPreference
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
 renderer.setSize(renderWidth(), renderHeight());
@@ -80,6 +67,16 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.95;
 rootElement.appendChild(renderer.domElement);
+
+// Weak Macs can still lose the GPU context under load; surface a clear message
+// instead of a frozen black canvas.
+renderer.domElement.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    document.querySelector('#intro').innerHTML =
+        `<div class="outcome" style="color:#ff7733">Графика перегрузила видеокарту</div>` +
+        `<div class="hint">Обновите страницу. Если повторяется, откройте с <b>?quality=low</b> в адресе.</div>`;
+    document.querySelector('#intro').style.display = 'flex';
+}, false);
 
 scene.add(new THREE.AmbientLight(0x4a5a78, 0.45));
 const moon = new THREE.DirectionalLight(0x9bb0d8, 0.85);
