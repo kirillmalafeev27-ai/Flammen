@@ -51,32 +51,44 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x07050b);
 scene.fog = new THREE.Fog(0x07050b, 30, 90);
 
-const renderer = new THREE.WebGLRenderer({
-    antialias: !lowPowerDevice,
-    alpha: false,
-    stencil: false,
-    depth: true,
-    premultipliedAlpha: false,
-    preserveDrawingBuffer: false,
-    precision: profile.precision,
-    powerPreference: profile.powerPreference
-});
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
-renderer.setSize(renderWidth(), renderHeight());
-renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.95;
-rootElement.appendChild(renderer.domElement);
+// The renderer is created here, but its setup must never block the menu: the
+// intro overlay is visible by default and its buttons only get listeners once
+// ui.bind() runs further down. On old Macs WebGL creation can throw, so we keep
+// it in a try/catch and let the menu bind regardless. `renderer` may end up null.
+let renderer = null;
+let rendererError = null;
+try {
+    renderer = new THREE.WebGLRenderer({
+        antialias: !lowPowerDevice,
+        alpha: false,
+        stencil: false,
+        depth: true,
+        premultipliedAlpha: false,
+        preserveDrawingBuffer: false,
+        precision: profile.precision,
+        powerPreference: profile.powerPreference
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
+    renderer.setSize(renderWidth(), renderHeight());
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 0.95;
+    rootElement.appendChild(renderer.domElement);
 
-// Weak Macs can still lose the GPU context under load; surface a clear message
-// instead of a frozen black canvas.
-renderer.domElement.addEventListener('webglcontextlost', (event) => {
-    event.preventDefault();
-    document.querySelector('#intro').innerHTML =
-        `<div class="outcome" style="color:#ff7733">Графика перегрузила видеокарту</div>` +
-        `<div class="hint">Обновите страницу. Если повторяется, откройте с <b>?quality=low</b> в адресе.</div>`;
-    document.querySelector('#intro').style.display = 'flex';
-}, false);
+    // Weak Macs can still lose the GPU context under load; surface a clear
+    // message instead of a frozen black canvas.
+    renderer.domElement.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        const intro = document.querySelector('#intro');
+        intro.innerHTML =
+            `<div class="outcome" style="color:#ff7733">Графика перегрузила видеокарту</div>` +
+            `<div class="hint">Обновите страницу. Если повторяется, откройте с <b>?quality=low</b> в адресе.</div>`;
+        intro.style.display = 'flex';
+    }, false);
+} catch (error) {
+    rendererError = error;
+    console.error('WebGL init failed:', error);
+}
 
 scene.add(new THREE.AmbientLight(0x4a5a78, 0.45));
 const moon = new THREE.DirectionalLight(0x9bb0d8, 0.85);
@@ -91,6 +103,7 @@ function resizeRenderer() {
     const h = renderHeight();
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    if (!renderer) return;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
     renderer.setSize(w, h);
 }
@@ -661,6 +674,15 @@ function animate() {
 }
 
 (async () => {
+    if (!renderer) {
+        // The menu is fully usable (it is pure DOM); only the 3D run is blocked.
+        ui.startStatus.textContent = 'WebGL недоступен в этом браузере.';
+        document.querySelector('#intro').insertAdjacentHTML('afterbegin',
+            `<div class="hint" style="color:#ff7733;text-align:center;padding:8px 0">` +
+            `Не удалось запустить графику (WebGL). Попробуйте обновить браузер/macOS.` +
+            `</div>`);
+        return;
+    }
     try {
         ui.setReady(false);
         await gameInstance.build();
