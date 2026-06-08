@@ -55,19 +55,37 @@ scene.fog = new THREE.Fog(0x07050b, 30, 90);
 // intro overlay is visible by default and its buttons only get listeners once
 // ui.bind() runs further down. On old Macs WebGL creation can throw, so we keep
 // it in a try/catch and let the menu bind regardless. `renderer` may end up null.
-let renderer = null;
-let rendererError = null;
-try {
-    renderer = new THREE.WebGLRenderer({
-        antialias: !lowPowerDevice,
-        alpha: false,
-        stencil: false,
-        depth: true,
-        premultipliedAlpha: false,
-        preserveDrawingBuffer: false,
-        precision: profile.precision,
-        powerPreference: profile.powerPreference
-    });
+//
+// We try progressively safer attribute sets: a weak/old Mac that rejects the
+// preferred config (e.g. highp / high-performance) can still come up on the bare
+// fallback, so the game runs instead of dying with a dead menu.
+function createRenderer() {
+    const attempts = [
+        {
+            antialias: !lowPowerDevice,
+            alpha: false,
+            stencil: false,
+            depth: true,
+            premultipliedAlpha: false,
+            preserveDrawingBuffer: false,
+            precision: profile.precision,
+            powerPreference: profile.powerPreference
+        },
+        { antialias: false, alpha: false, stencil: false, precision: 'mediump', powerPreference: 'default' },
+        { antialias: false }
+    ];
+    for (const attrs of attempts) {
+        try {
+            return new THREE.WebGLRenderer(attrs);
+        } catch (error) {
+            console.warn('WebGLRenderer attempt failed, trying safer attributes:', error?.message || error);
+        }
+    }
+    return null;
+}
+
+let renderer = createRenderer();
+if (renderer) {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, pixelRatioCap));
     renderer.setSize(renderWidth(), renderHeight());
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -85,9 +103,6 @@ try {
             `<div class="hint">Обновите страницу. Если повторяется, откройте с <b>?quality=low</b> в адресе.</div>`;
         intro.style.display = 'flex';
     }, false);
-} catch (error) {
-    rendererError = error;
-    console.error('WebGL init failed:', error);
 }
 
 scene.add(new THREE.AmbientLight(0x4a5a78, 0.45));
