@@ -4,6 +4,41 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>Flammen - Temple of Trials</title>
+    <!-- ES5-only boot error catcher: shows JS errors (incl. module parse errors
+         from an old Safari) on screen so they can be read without a console. -->
+    <script>
+    (function () {
+        function show(msg) {
+            try {
+                var el = document.getElementById('boot-error');
+                if (!el) {
+                    el = document.createElement('div');
+                    el.id = 'boot-error';
+                    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;' +
+                        'max-height:45vh;overflow:auto;background:rgba(40,0,0,0.94);color:#ffd2c2;' +
+                        'font:12px/1.45 ui-monospace,Menlo,monospace;padding:10px 12px;white-space:pre-wrap;' +
+                        'border-top:2px solid #ff5a3c;';
+                    var attach = function () { (document.body || document.documentElement).appendChild(el); };
+                    if (document.body) { attach(); } else {
+                        document.addEventListener('DOMContentLoaded', attach);
+                    }
+                }
+                el.textContent = (el.textContent ? el.textContent + '\n' : 'Ошибка загрузки:\n') + msg;
+            } catch (e) {}
+        }
+        window.addEventListener('error', function (e) {
+            if (e && e.message) {
+                show(e.message + (e.filename ? '  (' + e.filename + ':' + (e.lineno || '') + ')' : ''));
+            } else if (e && e.target && (e.target.src || e.target.href)) {
+                show('Не загрузился файл: ' + (e.target.src || e.target.href));
+            }
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+            var r = e && e.reason;
+            show('Promise: ' + (r && r.message ? r.message : String(r)));
+        });
+    })();
+    </script>
     <script type="importmap">
         {
             "imports": {
