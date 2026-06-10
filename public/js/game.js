@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../lib/three.module.js';
 import * as Photons from '../lib/photons.module.js';
 import { GLTFLoader } from './GltfLoader.js';
 import { buildFlamethrower } from './flamethrower.js';

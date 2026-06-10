@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from '../lib/three.module.js';
 import { Game } from './game.js';
 import { LANGUAGE_LEVELS, LEXICAL_TOPICS, GRAMMAR_TOPICS } from './questions.js';
 import { profile } from './device.js';

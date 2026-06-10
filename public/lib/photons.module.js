@@ -1,4 +1,4 @@
-import * as THREE$1 from 'three';
+import * as THREE$1 from './three.module.js';
 
 class ParticleStateProgressType {
 
