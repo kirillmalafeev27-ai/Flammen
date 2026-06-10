@@ -326,12 +326,18 @@ export class Game {
     }
 
     async loadMeshoptDecoder() {
+        let decoder;
         try {
             const module = await import('../lib/meshopt_decoder.module.js');
-            return module.MeshoptDecoder;
+            decoder = module.MeshoptDecoder;
         } catch (error) {
             throw new Error('Missing meshopt decoder: public/lib/meshopt_decoder.module.js');
         }
+        // Instantiate the WASM up front. The decoder probes WASM SIMD support and
+        // falls back to a non-SIMD build on older Safari that lacks it, so awaiting
+        // ready here surfaces a clean failure instead of a mid-decode throw.
+        if (decoder && decoder.ready) await decoder.ready;
+        return decoder;
     }
 
     layoutWorld() {

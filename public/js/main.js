@@ -705,8 +705,15 @@ function animate() {
         animate();
     } catch (e) {
         console.error(e);
-        document.querySelector('#intro').innerHTML =
-            `<div class="outcome" style="color:#ff5555">Failed to load</div>` +
-            `<div class="hint">${e.message}</div>`;
+        // Keep the (pure-DOM) menu interactive instead of replacing it. A failed
+        // 3D load used to wipe #intro entirely, so the menu vanished and every
+        // button "stopped responding" — the symptom seen on weak Macs / Safari.
+        ui.setReady(false);
+        ui.startStatus.textContent = 'Не удалось загрузить 3D-сцену.';
+        document.querySelector('#intro').insertAdjacentHTML('afterbegin',
+            `<div class="hint" style="color:#ff7733;text-align:center;padding:8px 0">` +
+            `Не удалось загрузить 3D-сцену: ${escapeHtml(e.message)}. ` +
+            `Обновите страницу; при повторе откройте с <b>?quality=low</b> в адресе.` +
+            `</div>`);
     }
 })();
