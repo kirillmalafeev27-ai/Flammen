@@ -1827,8 +1827,9 @@ export class Game {
                 }
                 this.ui.update(this);
                 if (this.state === STATE.PLAYING && this.playerTile === cfg.tiles - 1) {
-                    // Win rule: simply reaching any door ends the run as a win.
-                    this.finishRun(STATE.WON);
+                    // Win rule: reaching any door clears the level — advance to the
+                    // next mode (advanceLevel ends the run as a win on the last level).
+                    this.advanceLevel();
                 } else if (this.state === STATE.PLAYING && this.queuedBankMoves.length) {
                     const next = this.queuedBankMoves.shift();
                     this.beginMove(next.bridge, next.tile);
