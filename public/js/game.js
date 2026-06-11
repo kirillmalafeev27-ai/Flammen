@@ -232,6 +232,10 @@ export class Game {
         this.movesMade = 0;
         this.readyMoves = 0;
         this.perimeterQuestionBridge = null;
+        // Where the player respawns after a loss: the tile they last stepped
+        // from (their previous position), not the arena start.
+        this.respawnBridge = 0;
+        this.respawnTile = 0;
 
         this.keys = {};
         this.cameraYaw = 0;
@@ -849,31 +853,40 @@ export class Game {
         if (this.currentLevel === 5) {
             this.ensureFinalDoorIntel();
         }
-        this.resetPlayerForLevel();
+        this.resetPlayerForLevel(Boolean(options.respawnAtCheckpoint));
         this.ui.hideIntro();
         this.ui.hideOverlay();
         this.ui.hideQuestion();
         this.ui.hidePeek();
         this.ui.update(this);
         const profile = this.getLevelProfile();
-        this.ui.showMessage(`Режим ${this.currentLevel}: ${profile.name}. ${this.getLevelBrief(profile)}`, 4200);
+        if (options.respawnAtCheckpoint) {
+            this.ui.showMessage(`Повтор режима ${this.currentLevel}: та же позиция и те же двери.`, 3200);
+        } else {
+            this.ui.showMessage(`Режим ${this.currentLevel}: ${profile.name}. ${this.getLevelBrief(profile)}`, 4200);
+        }
     }
 
     restart() {
         const repeatLevel = this.state === STATE.BURNED || this.state === STATE.WRONG_DOOR;
+        // After a loss: same level, same doors, respawn at the previous position.
+        // After a win: a fresh run from level 1 with new doors.
         this.startRun(this.settings, {
             startLevel: repeatLevel ? this.currentLevel : 1,
-            preserveDoorIntel: false,
-            preserveDiary: true
+            preserveDoorIntel: repeatLevel,
+            preserveDiary: true,
+            respawnAtCheckpoint: repeatLevel
         });
     }
 
-    resetPlayerForLevel() {
-        this.playerBridge = 0;
-        this.playerTile = 0;
+    resetPlayerForLevel(useCheckpoint = false) {
+        const bridge = useCheckpoint ? clamp(Math.round(this.respawnBridge), 0, cfg.bridges - 1) : 0;
+        const tile = useCheckpoint ? clamp(Math.round(this.respawnTile), 0, cfg.tiles - 1) : 0;
+        this.playerBridge = bridge;
+        this.playerTile = tile;
         this.moveAnim = null;
-        this.player.position.copy(this.bridges[0].tiles[0]);
-        this.cameraYaw = this.bridges[0].angle + Math.PI;
+        this.player.position.copy(this.bridges[bridge].tiles[tile]);
+        this.cameraYaw = this.bridges[bridge].angle + Math.PI;
         this.cameraPitch = 0;
         this.startGraceUntil = this.elapsed + START_GRACE;
         this.routeReturnMode = false;
@@ -884,6 +897,10 @@ export class Game {
         this.readyMoves = 0;
         this.innerDoorAnchorBridge = null;
         this.suppressDoorAutoEnterOnce = false;
+        // Keep the respawn checkpoint aligned with the spawn position until the
+        // next move overwrites it.
+        this.respawnBridge = bridge;
+        this.respawnTile = tile;
         this.releasePointerLock();
     }
 
@@ -1794,6 +1811,9 @@ export class Game {
     }
 
     beginMove(toBridge, toTile) {
+        // Remember the tile we are leaving as the loss-respawn checkpoint.
+        this.respawnBridge = this.playerBridge;
+        this.respawnTile = this.playerTile;
         const from = this.player.position.clone();
         const to = this.bridges[toBridge].tiles[toTile].clone();
         this.moveAnim = { from, to, t: 0, duration: TURN_DURATION, toBridge, toTile };
