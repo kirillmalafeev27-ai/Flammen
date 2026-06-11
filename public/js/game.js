@@ -1825,20 +1825,13 @@ export class Game {
                 if (this.playerTile !== 0) {
                     this.perimeterQuestionBridge = null;
                 }
-                if (this.getLevelProfile().routeMemory && this.playerTile === cfg.tiles - 1 && !this.routeReturnMode) {
-                    this.routeReturnMode = true;
-                    this.ui.showMessage('Дверной конец достигнут. Обратный путь теперь открывается отдельными ответами.', 2600);
-                }
                 this.ui.update(this);
-                if (this.state === STATE.PLAYING && this.playerTile !== cfg.tiles - 1 && this.queuedBankMoves.length) {
+                if (this.state === STATE.PLAYING && this.playerTile === cfg.tiles - 1) {
+                    // Win rule: simply reaching any door ends the run as a win.
+                    this.finishRun(STATE.WON);
+                } else if (this.state === STATE.PLAYING && this.queuedBankMoves.length) {
                     const next = this.queuedBankMoves.shift();
                     this.beginMove(next.bridge, next.tile);
-                } else if (this.playerTile === cfg.tiles - 1) {
-                    if (this.suppressDoorAutoEnterOnce) {
-                        this.suppressDoorAutoEnterOnce = false;
-                    } else {
-                        this.ui.showMessage('У двери: E/кнопка действия - войти; влево/вправо - вопрос на внутренний периметр.', 2200);
-                    }
                 }
             }
         }
